@@ -3,10 +3,16 @@ const mongoose = require("mongoose");
 const User = require("../models/User");
 
 const NAME = process.env.SEED_SUPERADMIN_NAME || "Super Admin";
-const EMAIL = process.env.SEED_SUPERADMIN_EMAIL || "superadmin@dashboard.com";
-const PASSWORD = process.env.SEED_SUPERADMIN_PASSWORD || "SuperAdmin@123";
+const EMAIL = process.env.SEED_SUPERADMIN_EMAIL;
+const PASSWORD = process.env.SEED_SUPERADMIN_PASSWORD;
 
 const run = async () => {
+  if (!EMAIL || !PASSWORD) {
+    throw new Error(
+      "Set SEED_SUPERADMIN_EMAIL and SEED_SUPERADMIN_PASSWORD before running this script — no default credentials are provided."
+    );
+  }
+
   await mongoose.connect(process.env.MONGO_URI);
 
   const existing = await User.findOne({ role: "superadmin" });
