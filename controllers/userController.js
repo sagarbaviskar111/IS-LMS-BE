@@ -168,6 +168,116 @@ exports.createUser = async (req, res) => {
   }
 };
 
+const MAX_BULK_ROWS = 500;
+
+// Rows already parsed client-side (from a CSV/Excel upload) — this endpoint
+// only ever creates student/teacher/telecaller accounts for the calling
+// admin's own institute, same as createUser one at a time, just looped.
+// Never fails the whole batch for one bad row: everything resolvable gets
+// created, everything else comes back in `skipped` with why.
+exports.bulkCreateUsers = async (req, res) => {
+  try {
+    const { role, rows } = req.body;
+    if (!["student", "teacher", "telecaller"].includes(role) || !canManageRole(req.user.role, role)) {
+      return res.status(403).json({ message: `You are not allowed to create ${role} accounts` });
+    }
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ message: "rows must be a non-empty array" });
+    }
+    if (rows.length > MAX_BULK_ROWS) {
+      return res.status(400).json({ message: `Upload at most ${MAX_BULK_ROWS} rows at a time` });
+    }
+
+    // Batch names are resolved once up front rather than per row.
+    const batches =
+      role === "student" || role === "teacher" ? await Batch.find({ admin: req.user._id }) : [];
+    const batchByName = new Map(batches.map((b) => [b.name.trim().toLowerCase(), b]));
+
+    const created = [];
+    const skipped = [];
+
+    for (let i = 0; i < rows.length; i += 1) {
+      const row = rows[i] || {};
+      const rowNum = i + 1;
+      const name = String(row.name || "").trim();
+      const email = String(row.email || "").trim().toLowerCase();
+      const phone = row.phone ? String(row.phone).trim() : undefined;
+
+      if (!name || !email) {
+        skipped.push({ row: rowNum, name, email, reason: "Missing name or email" });
+        continue;
+      }
+
+      const existing = await User.findOne({ email });
+      if (existing) {
+        skipped.push({ row: rowNum, name, email, reason: "Email already exists" });
+        continue;
+      }
+
+      const providedPassword = row.password ? String(row.password) : null;
+      const password = providedPassword || crypto.randomBytes(6).toString("hex");
+
+      const payload = {
+        name,
+        email,
+        password,
+        role,
+        phone,
+        createdBy: req.user._id,
+        admin: req.user._id,
+        isActive: true,
+      };
+
+      if (role === "student" && row.batch) {
+        const batch = batchByName.get(String(row.batch).trim().toLowerCase());
+        if (!batch) {
+          skipped.push({ row: rowNum, name, email, reason: `Batch "${row.batch}" not found` });
+          continue;
+        }
+        payload.batch = batch._id;
+        if (batch.defaultFee) {
+          payload.installmentAmount = batch.defaultFee;
+          payload.balanceDue = batch.defaultFee;
+          payload.nextDueDate = new Date(Date.now() + (batch.paymentCycleDays || 30) * DAY_MS);
+        }
+      }
+
+      if (role === "teacher" && row.batches) {
+        const names = String(row.batches)
+          .split(/[,;]/)
+          .map((n) => n.trim().toLowerCase())
+          .filter(Boolean);
+        const resolvedIds = [];
+        const missing = names.find((n) => !batchByName.has(n));
+        if (missing) {
+          skipped.push({ row: rowNum, name, email, reason: `Batch "${missing}" not found` });
+          continue;
+        }
+        for (const n of names) resolvedIds.push(batchByName.get(n)._id);
+        payload.batches = resolvedIds;
+      }
+
+      try {
+        const user = await User.create(payload);
+        created.push({
+          row: rowNum,
+          name: user.name,
+          email: user.email,
+          // Only echoed back when we generated it — if the sheet already had
+          // a password, the admin already has it, no need to repeat it.
+          password: providedPassword ? undefined : password,
+        });
+      } catch (err) {
+        skipped.push({ row: rowNum, name, email, reason: err.message || "Could not create account" });
+      }
+    }
+
+    res.status(201).json({ created, skipped });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
 exports.listUsers = async (req, res) => {
   try {
     const allowedRoles = MANAGEABLE_ROLES[req.user.role] || [];

@@ -1,6 +1,7 @@
 const express = require("express");
 const {
   createUser,
+  bulkCreateUsers,
   listUsers,
   getUser,
   updateUser,
@@ -29,6 +30,8 @@ router.route("/email-settings").get(getEmailSettings).patch(updateEmailSettings)
 
 router.get("/lead-webhook", authorize("admin"), getLeadWebhookSettings);
 router.post("/lead-webhook/regenerate", authorize("admin"), regenerateLeadWebhookKey);
+
+router.post("/bulk", authorize("admin"), bulkCreateUsers);
 
 router.route("/").get(listUsers).post(createUser);
 router.route("/:id").get(getUser).patch(updateUser).delete(deleteUser);
