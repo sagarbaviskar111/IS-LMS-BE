@@ -1,5 +1,11 @@
 const express = require("express");
-const { getStatus, connect, callback, disconnectAccount } = require("../controllers/youtubeController");
+const {
+  getStatus,
+  saveCredentials,
+  connect,
+  callback,
+  disconnectAccount,
+} = require("../controllers/youtubeController");
 const { protect, authorize } = require("../middleware/auth");
 
 const router = express.Router();
@@ -11,6 +17,7 @@ router.get("/callback", callback);
 
 router.use(protect, authorize("admin"));
 router.get("/status", getStatus);
+router.patch("/credentials", saveCredentials);
 router.get("/connect", connect);
 router.delete("/disconnect", disconnectAccount);
 

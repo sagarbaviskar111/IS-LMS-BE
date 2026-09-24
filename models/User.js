@@ -69,8 +69,15 @@ const userSchema = new mongoose.Schema(
     // Each coaching class connects its own YouTube channel; teachers under
     // that admin then upload session recordings straight to it as unlisted
     // videos. The refresh token is encrypted at rest and never serialized.
+    // Each institute also brings its own Google Cloud OAuth app (own
+    // googleClientId/googleClientSecret) rather than sharing one across every
+    // institute — the YouTube Data API's upload quota is allocated per
+    // project, not per channel, so a shared app would mean every institute's
+    // teachers draw from the same small daily upload allowance.
     youtube: {
       connected: { type: Boolean, default: false },
+      googleClientId: { type: String, default: null },
+      googleClientSecret: { type: String, default: null, select: false },
       channelId: { type: String, default: null },
       channelTitle: { type: String, default: null },
       refreshToken: { type: String, default: null, select: false },
@@ -105,7 +112,10 @@ userSchema.methods.comparePassword = function (candidate) {
 userSchema.set("toJSON", {
   transform: (doc, ret) => {
     delete ret.password;
-    if (ret.youtube) delete ret.youtube.refreshToken;
+    if (ret.youtube) {
+      delete ret.youtube.refreshToken;
+      delete ret.youtube.googleClientSecret;
+    }
     return ret;
   },
 });
