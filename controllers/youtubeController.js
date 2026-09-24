@@ -63,21 +63,22 @@ exports.callback = async (req, res) => {
   }
 
   const frontendBase = decoded.instituteSlug
-    ? `${frontendOrigin}/${decoded.instituteSlug}/dashboard/admin/youtube`
+    ? `${frontendOrigin}/${decoded.instituteSlug}/dashboard/admin/settings?tab=youtube`
     : genericBase;
+  const join = frontendBase.includes("?") ? "&" : "?";
 
   if (error) {
-    return res.redirect(`${frontendBase}?error=${encodeURIComponent(String(error))}`);
+    return res.redirect(`${frontendBase}${join}error=${encodeURIComponent(String(error))}`);
   }
   if (!code) {
-    return res.redirect(`${frontendBase}?error=missing_code`);
+    return res.redirect(`${frontendBase}${join}error=missing_code`);
   }
 
   try {
     await exchangeCodeAndSave(decoded.adminId, String(code));
-    res.redirect(`${frontendBase}?connected=1`);
+    res.redirect(`${frontendBase}${join}connected=1`);
   } catch (err) {
-    res.redirect(`${frontendBase}?error=${encodeURIComponent(err.message || "connect_failed")}`);
+    res.redirect(`${frontendBase}${join}error=${encodeURIComponent(err.message || "connect_failed")}`);
   }
 };
 
