@@ -1,45 +1,12 @@
-const crypto = require("crypto");
 const fs = require("fs");
 const { google } = require("googleapis");
 const User = require("../models/User");
+const { encrypt, decrypt } = require("./crypto");
 
 const SCOPES = [
   "https://www.googleapis.com/auth/youtube.upload",
   "https://www.googleapis.com/auth/youtube.readonly",
 ];
-
-// AES-256-GCM at rest for the refresh token. Key must be a 32-byte value,
-// given as a 64-char hex string in YT_TOKEN_ENCRYPTION_KEY.
-const getEncryptionKey = () => {
-  const hex = process.env.YT_TOKEN_ENCRYPTION_KEY;
-  if (!hex || hex.length !== 64) {
-    throw new Error("YT_TOKEN_ENCRYPTION_KEY must be set to a 64-character hex string (32 bytes)");
-  }
-  return Buffer.from(hex, "hex");
-};
-
-const encrypt = (text) => {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv("aes-256-gcm", getEncryptionKey(), iv);
-  const encrypted = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
-  const authTag = cipher.getAuthTag();
-  return [iv.toString("hex"), authTag.toString("hex"), encrypted.toString("hex")].join(":");
-};
-
-const decrypt = (payload) => {
-  const [ivHex, authTagHex, dataHex] = payload.split(":");
-  const decipher = crypto.createDecipheriv(
-    "aes-256-gcm",
-    getEncryptionKey(),
-    Buffer.from(ivHex, "hex")
-  );
-  decipher.setAuthTag(Buffer.from(authTagHex, "hex"));
-  const decrypted = Buffer.concat([
-    decipher.update(Buffer.from(dataHex, "hex")),
-    decipher.final(),
-  ]);
-  return decrypted.toString("utf8");
-};
 
 // Each institute brings its own Google Cloud OAuth app — the YouTube Data
 // API's upload quota is allocated per project, not per channel, so sharing

@@ -1,25 +1,35 @@
 const nodemailer = require("nodemailer");
+const User = require("../models/User");
+const { encrypt, decrypt } = require("./crypto");
 
-let transporter = null;
-
-const getTransporter = () => {
-  if (transporter) return transporter;
-  if (!process.env.EMAIL_USER || !process.env.EMAIL_APP_PASSWORD) {
-    throw new Error("EMAIL_USER and EMAIL_APP_PASSWORD must be set to send email");
-  }
-  transporter = nodemailer.createTransport({
-    service: "gmail",
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_APP_PASSWORD,
-    },
+const saveEmailCredentials = async (adminId, address, appPassword) => {
+  await User.findByIdAndUpdate(adminId, {
+    "emailSender.address": address,
+    "emailSender.appPassword": encrypt(appPassword),
   });
-  return transporter;
 };
 
-const sendPasswordResetEmail = async (to, resetUrl) => {
-  await getTransporter().sendMail({
-    from: `"InstituteSathi" <${process.env.EMAIL_USER}>`,
+// Each institute (and the superadmin, for their own account) sends through
+// its own Gmail account — see the matching comment on the User model.
+const getSenderForAdmin = async (adminId) => {
+  const admin = await User.findById(adminId).select("+emailSender.appPassword");
+  const address = admin?.emailSender?.address;
+  const encryptedPassword = admin?.emailSender?.appPassword;
+  if (!address || !encryptedPassword) {
+    throw new Error("This institute hasn't set up its sender email yet");
+  }
+  return { address, appPassword: decrypt(encryptedPassword) };
+};
+
+const sendPasswordResetEmail = async (adminId, to, resetUrl) => {
+  const { address, appPassword } = await getSenderForAdmin(adminId);
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: { user: address, pass: appPassword },
+  });
+
+  await transporter.sendMail({
+    from: `"InstituteSathi" <${address}>`,
     to,
     subject: "Reset your password",
     html: `
@@ -38,4 +48,4 @@ const sendPasswordResetEmail = async (to, resetUrl) => {
   });
 };
 
-module.exports = { sendPasswordResetEmail };
+module.exports = { saveEmailCredentials, sendPasswordResetEmail };

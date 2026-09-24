@@ -383,8 +383,11 @@ exports.forgotPassword = async (req, res) => {
 
       const frontendOrigin = process.env.FRONTEND_URL || "http://localhost:3000";
       const resetUrl = `${frontendOrigin}/reset-password/${rawToken}`;
+      // Sent through the institute's own Gmail sender — themselves for an
+      // admin/superadmin, their admin's for everyone else.
+      const senderAdminId = user.role === "admin" || user.role === "superadmin" ? user._id : user.admin;
       try {
-        await sendPasswordResetEmail(user.email, resetUrl);
+        await sendPasswordResetEmail(senderAdminId, user.email, resetUrl);
       } catch (err) {
         console.error("[forgot-password] email send failed:", err.message);
       }

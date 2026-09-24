@@ -7,6 +7,8 @@ const {
   deleteUser,
   getTeamSettings,
   updateTeamSettings,
+  getEmailSettings,
+  updateEmailSettings,
 } = require("../controllers/userController");
 const { protect, authorize } = require("../middleware/auth");
 
@@ -18,6 +20,10 @@ router
   .route("/team-settings")
   .get(authorize("admin"), getTeamSettings)
   .patch(authorize("admin"), updateTeamSettings);
+
+// Both admin (their institute) and superadmin (their own account) send
+// password-reset email through their own Gmail sender.
+router.route("/email-settings").get(getEmailSettings).patch(updateEmailSettings);
 
 router.route("/").get(listUsers).post(createUser);
 router.route("/:id").get(getUser).patch(updateUser).delete(deleteUser);

@@ -79,6 +79,18 @@ const userSchema = new mongoose.Schema(
     // hands it to that person directly. Meaningless on non-admin accounts.
     allowSelfPasswordReset: { type: Boolean, default: false },
 
+    // --- Outgoing email (admin and superadmin) ---
+    // Each institute (and the platform's superadmin, for their own account)
+    // sends password-reset email through its own Gmail account via an App
+    // Password — not one shared sender for the whole platform. Same
+    // per-tenant reasoning as the YouTube integration below: a single
+    // shared sender would tie every institute's deliverability and sending
+    // limits to one Google account.
+    emailSender: {
+      address: { type: String, default: null },
+      appPassword: { type: String, default: null, select: false },
+    },
+
     // --- YouTube integration (admin only) ---
     // Each coaching class connects its own YouTube channel; teachers under
     // that admin then upload session recordings straight to it as unlisted
@@ -130,6 +142,7 @@ userSchema.set("toJSON", {
       delete ret.youtube.refreshToken;
       delete ret.youtube.googleClientSecret;
     }
+    if (ret.emailSender) delete ret.emailSender.appPassword;
     return ret;
   },
 });

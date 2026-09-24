@@ -5,6 +5,7 @@ const generateInviteCode = require("../utils/inviteCode");
 const paginate = require("../utils/paginate");
 const { DAY_MS } = require("../utils/paymentCycle");
 const { generateUniqueSlug } = require("../utils/slug");
+const { saveEmailCredentials } = require("../utils/email");
 
 // Roles each role is allowed to create/manage.
 // superadmin only manages coaching-class admins.
@@ -307,6 +308,26 @@ exports.deleteUser = async (req, res) => {
 
     await user.deleteOne();
     res.json({ message: "User deleted" });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.getEmailSettings = async (req, res) => {
+  res.json({
+    address: req.user.emailSender?.address || null,
+    hasCredentials: !!req.user.emailSender?.address,
+  });
+};
+
+exports.updateEmailSettings = async (req, res) => {
+  try {
+    const { address, appPassword } = req.body;
+    if (!address || !appPassword) {
+      return res.status(400).json({ message: "address and appPassword are required" });
+    }
+    await saveEmailCredentials(req.user._id, String(address).trim().toLowerCase(), String(appPassword).trim());
+    res.json({ message: "Sender email saved." });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
