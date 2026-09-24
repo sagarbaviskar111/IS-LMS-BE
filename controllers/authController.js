@@ -11,6 +11,13 @@ const cookieOptions = {
   httpOnly: true,
   secure: process.env.NODE_ENV === "production",
   sameSite: "lax",
+  // Lets the cookie set by the API subdomain (api.example.com) be read on
+  // the frontend's own domain (example.com) too — without this, a browser
+  // scopes the cookie to the exact host that set it, so Next.js middleware
+  // on the frontend domain never sees it and treats every request as logged
+  // out. Unset in dev, where frontend/backend share the "localhost" host
+  // (just different ports) and cookies are already shared there.
+  domain: process.env.COOKIE_DOMAIN || undefined,
   maxAge: 7 * 24 * 60 * 60 * 1000,
 };
 
