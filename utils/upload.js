@@ -20,6 +20,13 @@ const DOCUMENT_MIMES = new Set([
 const VIDEO_MIMES = new Set(["video/mp4", "video/webm", "video/quicktime", "video/x-matroska"]);
 const IMAGE_MIMES = new Set(["image/jpeg", "image/png", "image/webp", "image/heic"]);
 
+// Session recordings can be large — capped well above documents, which have
+// no business being this big. Multer only supports one fileSize limit per
+// instance, so this is the ceiling it enforces; materialController then
+// applies the stricter DOCUMENT_MAX_SIZE itself once it knows the type.
+const VIDEO_MAX_SIZE = 1024 * 1024 * 1024; // 1GB
+const DOCUMENT_MAX_SIZE = 100 * 1024 * 1024; // 100MB
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
@@ -38,7 +45,7 @@ const fileFilter = (req, file, cb) => {
 const upload = multer({
   storage,
   fileFilter,
-  limits: { fileSize: 200 * 1024 * 1024 },
+  limits: { fileSize: VIDEO_MAX_SIZE },
 });
 
 const resolveType = (mimeType) => (VIDEO_MIMES.has(mimeType) ? "video" : "document");
@@ -92,4 +99,12 @@ const logoUpload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 
-module.exports = { upload, resolveType, UPLOAD_DIR, assignmentUpload, logoUpload };
+module.exports = {
+  upload,
+  resolveType,
+  UPLOAD_DIR,
+  assignmentUpload,
+  logoUpload,
+  VIDEO_MAX_SIZE,
+  DOCUMENT_MAX_SIZE,
+};

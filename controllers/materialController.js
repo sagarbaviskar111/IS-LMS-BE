@@ -2,7 +2,7 @@ const fs = require("fs");
 const Material = require("../models/Material");
 const Session = require("../models/Session");
 const User = require("../models/User");
-const { resolveType } = require("../utils/upload");
+const { resolveType, DOCUMENT_MAX_SIZE } = require("../utils/upload");
 const { uploadFile, deleteFile } = require("../utils/cloudinary");
 const { withFileUrl } = require("../utils/fileUrlView");
 const { uploadVideo } = require("../utils/youtube");
@@ -27,6 +27,15 @@ exports.uploadMaterial = async (req, res) => {
     }
 
     const type = resolveType(req.file.mimetype);
+
+    // Multer's own limit is sized for the largest allowed upload (video);
+    // a document over the stricter, much smaller cap has to be caught here.
+    if (type === "document" && req.file.size > DOCUMENT_MAX_SIZE) {
+      fs.unlink(req.file.path, () => {});
+      return res.status(413).json({
+        message: `Documents must be under ${Math.round(DOCUMENT_MAX_SIZE / (1024 * 1024))}MB`,
+      });
+    }
 
     // A session recording must be tied to a real session in this batch.
     // Study material (documents) may optionally link to one too, but it's not required.

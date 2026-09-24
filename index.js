@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
+const multer = require("multer");
 require("dotenv").config();
 const connectDB = require("./config/db");
 
@@ -54,9 +55,30 @@ app.use("/api/admin/youtube", youtubeRoutes);
 app.use("/api/institutes", instituteRoutes);
 app.use("/api/portfolio", portfolioRoutes);
 
-app.listen(PORT, () => {
+// Catches file-upload failures (oversized file, wrong type) from any multer
+// instance in the app and returns clean JSON instead of Express's default
+// HTML error page, which the frontend can't parse as an API response.
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    if (err.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({ message: "File is too large." });
+    }
+    return res.status(400).json({ message: err.message });
+  }
+  if (err) {
+    return res.status(400).json({ message: err.message || "Request failed" });
+  }
+  next();
+});
+
+const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
+
+// Node's default 5-minute request timeout can cut off a large recording
+// upload from a slow connection before it finishes; give it real headroom.
+server.requestTimeout = 20 * 60 * 1000;
+server.headersTimeout = server.requestTimeout + 5000;
 
 // Deactivates students whose payment cycle lapsed unpaid, and rolls forward
 // the cycle for anyone caught up. Runs on boot, then every 15 minutes.
