@@ -65,6 +65,20 @@ const userSchema = new mongoose.Schema(
     // other successful payment on the account could be replayed here.
     pendingRazorpayOrderId: { type: String, default: null },
 
+    // --- Password reset ---
+    // Stores a SHA-256 hash of the reset token, never the raw token the user
+    // receives by email — a DB leak alone then isn't enough to reset anyone's
+    // password. Both are select:false since neither should ever appear in an
+    // API response.
+    resetPasswordToken: { type: String, default: null, select: false },
+    resetPasswordExpires: { type: Date, default: null, select: false },
+    // Admin-only setting: whether their team (student/teacher/telecaller)
+    // can reset their own password by email. When false (the default), a
+    // "forgot password" request from someone on their team just notifies
+    // the admin instead — the admin sets a new password themselves and
+    // hands it to that person directly. Meaningless on non-admin accounts.
+    allowSelfPasswordReset: { type: Boolean, default: false },
+
     // --- YouTube integration (admin only) ---
     // Each coaching class connects its own YouTube channel; teachers under
     // that admin then upload session recordings straight to it as unlisted

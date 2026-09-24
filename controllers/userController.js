@@ -311,3 +311,21 @@ exports.deleteUser = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+exports.getTeamSettings = async (req, res) => {
+  res.json({ allowSelfPasswordReset: !!req.user.allowSelfPasswordReset });
+};
+
+exports.updateTeamSettings = async (req, res) => {
+  try {
+    const { allowSelfPasswordReset } = req.body;
+    if (typeof allowSelfPasswordReset !== "boolean") {
+      return res.status(400).json({ message: "allowSelfPasswordReset must be a boolean" });
+    }
+    req.user.allowSelfPasswordReset = allowSelfPasswordReset;
+    await req.user.save();
+    res.json({ allowSelfPasswordReset: req.user.allowSelfPasswordReset });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};

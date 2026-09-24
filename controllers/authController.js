@@ -2,10 +2,16 @@ const crypto = require("crypto");
 const User = require("../models/User");
 const Lead = require("../models/Lead");
 const Payment = require("../models/Payment");
+const Notification = require("../models/Notification");
 const generateToken = require("../utils/generateToken");
 const { getRazorpay } = require("../utils/razorpay");
 const { DAY_MS } = require("../utils/paymentCycle");
 const { resolveInstitute } = require("../utils/institute");
+const { sendPasswordResetEmail } = require("../utils/email");
+
+const ROLE_LABELS = { student: "Students", teacher: "Teachers", telecaller: "Telecallers" };
+
+const RESET_TOKEN_EXPIRE_MS = 30 * 60 * 1000; // 30 minutes
 
 const cookieOptions = {
   httpOnly: true,
@@ -341,4 +347,94 @@ exports.logout = (req, res) => {
 exports.me = async (req, res) => {
   const institute = await resolveInstitute(req.user);
   res.json({ user: req.user.toJSON(), institute });
+};
+
+exports.forgotPassword = async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) {
+      return res.status(400).json({ message: "Email is required" });
+    }
+
+    const user = await User.findOne({ email: String(email).toLowerCase() });
+    if (!user) {
+      // Same generic response as the "found" paths below, so this endpoint
+      // can't be used to check which emails are registered.
+      return res.json({
+        message: "If an account exists with that email, you'll be able to reset your password shortly.",
+      });
+    }
+
+    // Admins (and superadmin) always self-serve by email. A student,
+    // teacher or telecaller only does when their admin has opted their
+    // team into it — otherwise the request just notifies the admin, who
+    // sets a new password and hands it to them directly.
+    let admin = null;
+    if (user.role !== "admin" && user.role !== "superadmin" && user.admin) {
+      admin = await User.findById(user.admin).select("name allowSelfPasswordReset");
+    }
+    const selfServiceAllowed = user.role === "admin" || user.role === "superadmin" || !!admin?.allowSelfPasswordReset;
+
+    if (selfServiceAllowed) {
+      const rawToken = crypto.randomBytes(32).toString("hex");
+      user.resetPasswordToken = crypto.createHash("sha256").update(rawToken).digest("hex");
+      user.resetPasswordExpires = new Date(Date.now() + RESET_TOKEN_EXPIRE_MS);
+      await user.save();
+
+      const frontendOrigin = process.env.FRONTEND_URL || "http://localhost:3000";
+      const resetUrl = `${frontendOrigin}/reset-password/${rawToken}`;
+      try {
+        await sendPasswordResetEmail(user.email, resetUrl);
+      } catch (err) {
+        console.error("[forgot-password] email send failed:", err.message);
+      }
+      return res.json({ message: "We've sent a password reset link to your email." });
+    }
+
+    // Manual flow: notify the admin instead of emailing a reset link.
+    if (admin) {
+      await Notification.create({
+        recipient: admin._id,
+        sender: user._id,
+        senderRole: user.role,
+        title: "Password reset requested",
+        message: `${user.name} (${user.email}) asked to reset their password. Set a new one for them from ${
+          ROLE_LABELS[user.role] || "your team"
+        } and share it with them directly.`,
+      });
+    }
+    res.json({
+      message: "Your admin has been notified and will help you reset your password — reach out to them directly too.",
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.resetPassword = async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    if (!token || !password) {
+      return res.status(400).json({ message: "token and password are required" });
+    }
+
+    const hashedToken = crypto.createHash("sha256").update(String(token)).digest("hex");
+    const user = await User.findOne({
+      resetPasswordToken: hashedToken,
+      resetPasswordExpires: { $gt: new Date() },
+    }).select("+resetPasswordToken +resetPasswordExpires");
+
+    if (!user) {
+      return res.status(400).json({ message: "This reset link is invalid or has expired" });
+    }
+
+    user.password = password;
+    user.resetPasswordToken = null;
+    user.resetPasswordExpires = null;
+    await user.save();
+
+    res.json({ message: "Password reset — you can now log in with your new password." });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
 };
