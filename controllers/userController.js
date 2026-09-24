@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const User = require("../models/User");
 const Batch = require("../models/Batch");
 const Payment = require("../models/Payment");
@@ -6,6 +7,11 @@ const paginate = require("../utils/paginate");
 const { DAY_MS } = require("../utils/paymentCycle");
 const { generateUniqueSlug } = require("../utils/slug");
 const { saveEmailCredentials } = require("../utils/email");
+
+const buildWebhookUrl = (req, apiKey) => {
+  const base = `${req.protocol}://${req.get("host")}`;
+  return `${base}/api/leads/webhook/${apiKey}`;
+};
 
 // Roles each role is allowed to create/manage.
 // superadmin only manages coaching-class admins.
@@ -328,6 +334,31 @@ exports.updateEmailSettings = async (req, res) => {
     }
     await saveEmailCredentials(req.user._id, String(address).trim().toLowerCase(), String(appPassword).trim());
     res.json({ message: "Sender email saved." });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.getLeadWebhookSettings = async (req, res) => {
+  try {
+    let apiKey = req.user.leadWebhookKey;
+    if (!apiKey) {
+      apiKey = crypto.randomBytes(24).toString("hex");
+      req.user.leadWebhookKey = apiKey;
+      await req.user.save();
+    }
+    res.json({ apiKey, webhookUrl: buildWebhookUrl(req, apiKey) });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.regenerateLeadWebhookKey = async (req, res) => {
+  try {
+    const apiKey = crypto.randomBytes(24).toString("hex");
+    req.user.leadWebhookKey = apiKey;
+    await req.user.save();
+    res.json({ apiKey, webhookUrl: buildWebhookUrl(req, apiKey) });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }

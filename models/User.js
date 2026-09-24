@@ -79,6 +79,16 @@ const userSchema = new mongoose.Schema(
     // hands it to that person directly. Meaningless on non-admin accounts.
     allowSelfPasswordReset: { type: Boolean, default: false },
 
+    // --- Lead ingestion webhook (admin only) ---
+    // Lets an external source (a Google Sheet via a pasted Apps Script
+    // snippet, another website's backend, Zapier, etc.) POST new leads
+    // straight in — see POST /api/leads/webhook/:apiKey. Generated on first
+    // use, not select:false since the admin needs to read it back to paste
+    // into whatever they're connecting; not sensitive beyond "can create
+    // leads for this institute," so a leak just means junk leads, not a
+    // security breach — the admin can regenerate it anytime regardless.
+    leadWebhookKey: { type: String, default: null },
+
     // --- Outgoing email (admin and superadmin) ---
     // Each institute (and the platform's superadmin, for their own account)
     // sends password-reset email through its own Gmail account via an App

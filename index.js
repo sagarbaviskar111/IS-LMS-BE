@@ -25,6 +25,12 @@ const { runPaymentCycleCheck } = require("./utils/paymentCycle");
 const app = express();
 const PORT = process.env.PORT || 5000;
 
+// Behind nginx in production — without this, req.protocol always reports
+// "http" (ignoring nginx's X-Forwarded-Proto), which would make a
+// self-constructed URL like the lead webhook's come out as http:// even
+// though the real request arrived over https.
+app.set("trust proxy", 1);
+
 connectDB();
 
 app.use(

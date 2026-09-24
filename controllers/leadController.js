@@ -58,6 +58,55 @@ exports.createLead = async (req, res) => {
   }
 };
 
+// Public — no session, authenticated purely by the per-admin key in the
+// URL. Used by external sources (a Google Sheet via a pasted Apps Script
+// trigger, another website's backend, Zapier, etc.) to push leads straight
+// in. Unlike the manual createLead above, a missing telecaller doesn't
+// reject the request — dropping data from an unattended integration would
+// be worse than leaving a lead unassigned for the admin to sort out later.
+exports.ingestWebhookLead = async (req, res) => {
+  try {
+    const admin = await User.findOne({ role: "admin", leadWebhookKey: req.params.apiKey });
+    if (!admin) {
+      return res.status(401).json({ message: "Invalid webhook key" });
+    }
+
+    const { name, phone, email, notes, source } = req.body;
+    if (!name || !phone) {
+      return res.status(400).json({ message: "name and phone are required" });
+    }
+    const cleanPhone = String(phone).trim();
+
+    // Re-sent on every edit (a Google Sheet trigger fires on any change to
+    // the sheet, not just new rows) — match on phone within this admin's
+    // leads and update in place instead of piling up duplicates.
+    const existing = await Lead.findOne({ admin: admin._id, phone: cleanPhone });
+    if (existing) {
+      existing.name = name;
+      if (email !== undefined) existing.email = email;
+      if (notes !== undefined) existing.notes = notes;
+      await existing.save();
+      return res.json({ message: "Lead updated", lead: existing });
+    }
+
+    const assignedTelecaller = await assignTelecaller(admin._id);
+    const lead = await Lead.create({
+      admin: admin._id,
+      createdBy: admin._id,
+      name,
+      phone: cleanPhone,
+      email,
+      notes,
+      assignedTelecaller,
+      source: "webhook",
+      sourceLabel: source ? String(source).trim().slice(0, 60) : "External",
+    });
+    res.status(201).json({ message: "Lead created", lead });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
 exports.listLeads = async (req, res) => {
   try {
     const filter = { admin: req.user._id };

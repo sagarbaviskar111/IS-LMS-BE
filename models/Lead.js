@@ -35,6 +35,12 @@ const leadSchema = new mongoose.Schema(
     feeAmount: { type: Number, default: 0, min: 0 },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     callLogs: [callLogSchema],
+    // Where this lead came from — "webhook" for anything ingested via
+    // POST /api/leads/webhook/:apiKey (a connected Google Sheet, another
+    // website, Zapier, etc.), with sourceLabel holding whatever the sender
+    // called itself so the admin can tell integrations apart.
+    source: { type: String, enum: ["manual", "webhook"], default: "manual" },
+    sourceLabel: { type: String, trim: true, default: null },
   },
   { timestamps: true }
 );
