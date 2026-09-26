@@ -14,7 +14,7 @@ exports.getPublicInstitute = async (req, res) => {
     if (!slug) return res.status(400).json({ message: "slug is required" });
 
     const admin = await User.findOne({ instituteSlug: slug, role: "admin", isActive: true }).select(
-      "name instituteSlug brandColor logo"
+      "name instituteSlug brandColor brandColorPrimary brandColorBackground logo"
     );
     if (!admin) return res.status(404).json({ message: "Institute not found" });
 
@@ -31,6 +31,8 @@ const ownBranding = (admin) => ({
   name: admin.name,
   instituteSlug: admin.instituteSlug || null,
   brandColor: admin.brandColor || null,
+  brandColorPrimary: admin.brandColorPrimary || null,
+  brandColorBackground: admin.brandColorBackground || null,
   logoUrl: admin.logo?.cloudinaryPublicId ? getFileUrl(admin.logo.cloudinaryPublicId, admin.logo.cloudinaryResourceType) : null,
 });
 
@@ -41,7 +43,7 @@ exports.getBranding = async (req, res) => {
 exports.updateBranding = async (req, res) => {
   try {
     const admin = req.user;
-    const { instituteSlug, brandColor } = req.body;
+    const { instituteSlug, brandColor, brandColorPrimary, brandColorBackground } = req.body;
 
     if (instituteSlug !== undefined) {
       const clean = slugify(instituteSlug);
@@ -66,9 +68,25 @@ exports.updateBranding = async (req, res) => {
     if (brandColor !== undefined) {
       if (brandColor && !HEX_COLOR.test(brandColor)) {
         if (req.file) fs.unlink(req.file.path, () => {});
-        return res.status(400).json({ message: "brandColor must be a hex color like #4f46e5" });
+        return res.status(400).json({ message: "brandColor must be a hex color like #2563eb" });
       }
       admin.brandColor = brandColor || null;
+    }
+
+    if (brandColorPrimary !== undefined) {
+      if (brandColorPrimary && !HEX_COLOR.test(brandColorPrimary)) {
+        if (req.file) fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ message: "brandColorPrimary must be a hex color like #0b1f3a" });
+      }
+      admin.brandColorPrimary = brandColorPrimary || null;
+    }
+
+    if (brandColorBackground !== undefined) {
+      if (brandColorBackground && !HEX_COLOR.test(brandColorBackground)) {
+        if (req.file) fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ message: "brandColorBackground must be a hex color like #f8fafc" });
+      }
+      admin.brandColorBackground = brandColorBackground || null;
     }
 
     if (req.file) {

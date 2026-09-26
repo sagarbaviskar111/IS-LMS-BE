@@ -7,6 +7,8 @@ const shapeInstitute = (admin) => {
     name: admin.name,
     slug: admin.instituteSlug,
     brandColor: admin.brandColor || null,
+    brandColorPrimary: admin.brandColorPrimary || null,
+    brandColorBackground: admin.brandColorBackground || null,
     logoUrl: admin.logo?.cloudinaryPublicId
       ? getFileUrl(admin.logo.cloudinaryPublicId, admin.logo.cloudinaryResourceType)
       : null,
@@ -20,7 +22,9 @@ const resolveInstitute = async (user) => {
   if (user.role === "admin") return shapeInstitute(user);
   if (!user.admin) return null;
 
-  const admin = await User.findById(user.admin).select("name instituteSlug brandColor logo");
+  const admin = await User.findById(user.admin).select(
+    "name instituteSlug brandColor brandColorPrimary brandColorBackground logo"
+  );
   return shapeInstitute(admin);
 };
 

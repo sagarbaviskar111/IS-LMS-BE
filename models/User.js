@@ -127,7 +127,15 @@ const userSchema = new mongoose.Schema(
     // through, e.g. /clinidea-education/dashboard/... — generated from name
     // at creation, editable by the admin afterward.
     instituteSlug: { type: String, unique: true, sparse: true, lowercase: true, trim: true },
+    // Accent/CTA color — buttons, links, active nav state.
     brandColor: { type: String, default: null },
+    // Primary/dark color — hover state of the accent, and (with brandColor)
+    // the two ends of the primary-button gradient. Falls back to a darkened
+    // shade of brandColor when unset, so institutes that only ever picked one
+    // color keep working exactly as before.
+    brandColorPrimary: { type: String, default: null },
+    // Page background behind cards/tables. Falls back to the platform default.
+    brandColorBackground: { type: String, default: null },
     logo: {
       cloudinaryPublicId: { type: String, default: null },
       cloudinaryResourceType: { type: String, default: null },
