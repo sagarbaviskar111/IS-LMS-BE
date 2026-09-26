@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const Notification = require("../models/Notification");
 const User = require("../models/User");
 const paginate = require("../utils/paginate");
@@ -65,16 +66,18 @@ exports.sendNotification = async (req, res) => {
       return res.status(400).json({ message: "No recipients found" });
     }
 
+    const sendBatchId = crypto.randomUUID();
     const docs = recipients.map((r) => ({
       recipient: r._id,
       sender: req.user._id,
       senderRole: req.user.role,
       title,
       message,
+      sendBatchId,
     }));
 
     const created = await Notification.insertMany(docs);
-    res.status(201).json({ count: created.length });
+    res.status(201).json({ count: created.length, sendBatchId });
   } catch (err) {
     if (err instanceof HttpError) {
       return res.status(err.status).json({ message: err.message });
@@ -130,6 +133,79 @@ exports.markRead = async (req, res) => {
     await notification.save();
 
     res.json({ notification });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.listSentNotifications = async (req, res) => {
+  try {
+    const { page, limit, skip } = paginate(req);
+
+    const grouped = await Notification.aggregate([
+      { $match: { sender: req.user._id } },
+      {
+        $group: {
+          _id: "$sendBatchId",
+          title: { $first: "$title" },
+          message: { $first: "$message" },
+          createdAt: { $first: "$createdAt" },
+          totalRecipients: { $sum: 1 },
+          readCount: { $sum: { $cond: ["$read", 1, 0] } },
+        },
+      },
+      { $sort: { createdAt: -1 } },
+      { $skip: skip },
+      { $limit: limit },
+    ]);
+
+    const totalGroups = await Notification.aggregate([
+      { $match: { sender: req.user._id } },
+      { $group: { _id: "$sendBatchId" } },
+      { $count: "count" },
+    ]);
+    const total = totalGroups[0]?.count || 0;
+
+    res.json({
+      sent: grouped.map((g) => ({
+        sendBatchId: g._id,
+        title: g.title,
+        message: g.message,
+        createdAt: g.createdAt,
+        totalRecipients: g.totalRecipients,
+        readCount: g.readCount,
+      })),
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.getSentNotificationDetail = async (req, res) => {
+  try {
+    const notifications = await Notification.find({
+      sender: req.user._id,
+      sendBatchId: req.params.sendBatchId,
+    }).populate("recipient", "name email role");
+
+    if (notifications.length === 0) {
+      return res.status(404).json({ message: "Not found" });
+    }
+
+    const recipients = notifications
+      .map((n) => ({ recipient: n.recipient, read: n.read, readAt: n.readAt }))
+      .sort((a, b) => (a.recipient?.name || "").localeCompare(b.recipient?.name || ""));
+
+    res.json({
+      title: notifications[0].title,
+      message: notifications[0].message,
+      createdAt: notifications[0].createdAt,
+      recipients,
+    });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
