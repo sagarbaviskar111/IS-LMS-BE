@@ -88,6 +88,41 @@ const getAuthorizedYoutubeClient = async (adminId) => {
   return google.youtube({ version: "v3", auth: client });
 };
 
+// The googleapis client throws a gaxios error whose useful detail lives in
+// response.data.error (Google's own JSON body), not in err.message, which is
+// usually just a generic "Request failed with status code 403". Pulling the
+// real reason out lets us tell "you're out of quota for today" apart from
+// "your connection expired" instead of a single opaque failure for both.
+const describeYoutubeError = (err) => {
+  const status = err?.response?.status || err?.code;
+  const googleErrors = err?.response?.data?.error?.errors || [];
+  const reasons = googleErrors.map((e) => e.reason);
+  const oauthError = err?.response?.data?.error; // string form, e.g. "invalid_grant"
+
+  if (reasons.includes("quotaExceeded") || reasons.includes("dailyLimitExceeded")) {
+    return {
+      reason: "quotaExceeded",
+      message:
+        "Your institute's YouTube API quota for today is used up (Google gives a limited number of uploads per day per Google Cloud project). It resets at midnight Pacific Time — try again later, or ask Google for a higher quota from your Google Cloud Console.",
+    };
+  }
+  if (reasons.includes("uploadLimitExceeded")) {
+    return {
+      reason: "uploadLimitExceeded",
+      message:
+        "This YouTube channel has hit its own daily upload limit (separate from the API quota). Try again in 24 hours, or verify the channel's phone number on youtube.com to raise this limit.",
+    };
+  }
+  if (status === 401 || oauthError === "invalid_grant" || reasons.includes("authError") || reasons.includes("invalidCredentials")) {
+    return {
+      reason: "authError",
+      message: "Your institute's YouTube connection has expired or was revoked — reconnect it from Settings > YouTube.",
+    };
+  }
+
+  return { reason: "unknown", message: "Upload to YouTube failed — please try again." };
+};
+
 const uploadVideo = async (adminId, filePath, { title, description }) => {
   const youtube = await getAuthorizedYoutubeClient(adminId);
   const { data } = await youtube.videos.insert({
@@ -129,4 +164,5 @@ module.exports = {
   exchangeCodeAndSave,
   uploadVideo,
   disconnect,
+  describeYoutubeError,
 };

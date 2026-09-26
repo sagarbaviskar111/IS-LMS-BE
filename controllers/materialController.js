@@ -5,10 +5,25 @@ const User = require("../models/User");
 const { resolveType, DOCUMENT_MAX_SIZE } = require("../utils/upload");
 const { uploadFile, deleteFile } = require("../utils/cloudinary");
 const { withFileUrl } = require("../utils/fileUrlView");
-const { uploadVideo } = require("../utils/youtube");
+const { uploadVideo, describeYoutubeError } = require("../utils/youtube");
 
 const isAssigned = (req, batchId) =>
   (req.user.batches || []).some((b) => String(b) === String(batchId));
+
+// YouTube's Data API gives each Google Cloud project a limited daily quota,
+// and a single video upload eats a large share of it — enough real uploads
+// in a day exhausts it and every upload after that fails with an opaque
+// 502. Capping uploads per institute (not per teacher) before that happens
+// gives a clear, actionable error instead.
+const VIDEO_UPLOAD_DAILY_LIMIT = 10;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const countRecentVideoUploads = (adminId) =>
+  Material.countDocuments({
+    admin: adminId,
+    type: "video",
+    createdAt: { $gte: new Date(Date.now() - DAY_MS) },
+  });
 
 exports.uploadMaterial = async (req, res) => {
   try {
@@ -68,13 +83,26 @@ exports.uploadMaterial = async (req, res) => {
         });
       }
 
+      const recentUploads = await countRecentVideoUploads(req.user.admin);
+      if (recentUploads >= VIDEO_UPLOAD_DAILY_LIMIT) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(429).json({
+          message: `Your institute has uploaded ${VIDEO_UPLOAD_DAILY_LIMIT} videos in the last 24 hours — that's the daily limit (YouTube's own upload quota runs out around there). Try again later once some of today's uploads roll past 24 hours old.`,
+        });
+      }
+
       try {
         const result = await uploadVideo(req.user.admin, req.file.path, { title, description });
         youtubeVideoId = result.videoId;
         youtubeUrl = `https://www.youtube.com/watch?v=${result.videoId}`;
       } catch (err) {
         fs.unlink(req.file.path, () => {});
-        return res.status(502).json({ message: "Upload to YouTube failed — please try again" });
+        const { reason, message } = describeYoutubeError(err);
+        console.error(
+          `[youtube-upload] failed (${reason}) for admin ${req.user.admin}:`,
+          err?.response?.data?.error || err?.message || err
+        );
+        return res.status(502).json({ message });
       }
     } else {
       try {
