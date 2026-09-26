@@ -17,6 +17,8 @@ const notificationRoutes = require("./routes/notificationRoutes");
 const messageRoutes = require("./routes/messageRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const youtubeRoutes = require("./routes/youtubeRoutes");
+const toolRoutes = require("./routes/toolRoutes");
+const jobRoutes = require("./routes/jobRoutes");
 const instituteRoutes = require("./routes/instituteRoutes");
 const portfolioRoutes = require("./routes/portfolioRoutes");
 const User = require("./models/User");
@@ -58,6 +60,8 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/admin/youtube", youtubeRoutes);
+app.use("/api/tools", toolRoutes);
+app.use("/api/jobs", jobRoutes);
 app.use("/api/institutes", instituteRoutes);
 app.use("/api/portfolio", portfolioRoutes);
 

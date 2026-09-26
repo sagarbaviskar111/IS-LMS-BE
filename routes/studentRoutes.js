@@ -10,12 +10,17 @@ const {
 const { listExams, getExam, submitExam, getResult } = require("../controllers/studentExamController");
 const { listAssignments, submitAssignment } = require("../controllers/studentAssignmentController");
 const { assignmentUpload } = require("../utils/upload");
+const { listMyInstituteTools } = require("../controllers/toolController");
+const { listJobsForStudent, expressInterest } = require("../controllers/jobController");
 const { protect, authorize } = require("../middleware/auth");
 
 const router = express.Router();
 
 router.use(protect, authorize("student"));
 
+router.get("/tools", listMyInstituteTools);
+router.get("/jobs", listJobsForStudent);
+router.post("/jobs/:id/interest", expressInterest);
 router.get("/batch", myBatch);
 router.get("/sessions", listSessions);
 router.get("/attendance", myAttendance);

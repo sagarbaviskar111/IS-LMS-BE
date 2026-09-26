@@ -36,6 +36,7 @@ const {
   listSubmissions: listAssignmentSubmissions,
 } = require("../controllers/assignmentController");
 const { upload, assignmentUpload } = require("../utils/upload");
+const { listMyInstituteTools } = require("../controllers/toolController");
 const { protect, authorize } = require("../middleware/auth");
 
 const router = express.Router();
@@ -43,6 +44,8 @@ const router = express.Router();
 router.use(protect, authorize("teacher"));
 
 router.get("/youtube-status", youtubeStatus);
+
+router.get("/tools", listMyInstituteTools);
 
 router.get("/batches", listMyBatches);
 router.get("/batches/:id/students", listBatchStudents);
