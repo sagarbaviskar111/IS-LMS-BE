@@ -7,7 +7,8 @@ const jobSchema = new mongoose.Schema(
     title: { type: String, required: true, trim: true },
     company: { type: String, required: true, trim: true },
     description: { type: String, required: true, trim: true },
-    salary: { type: String, trim: true },
+    skills: { type: String, trim: true },
+    responsibilities: { type: String, trim: true },
     location: { type: String, trim: true },
     // "all" — every student under this admin can see it.
     // "batch" — only students in `batch` can see it.

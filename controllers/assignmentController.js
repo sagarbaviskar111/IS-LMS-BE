@@ -4,6 +4,7 @@ const AssignmentSubmission = require("../models/AssignmentSubmission");
 const User = require("../models/User");
 const { uploadFile, deleteFile, resolveResourceType } = require("../utils/cloudinary");
 const { withFileUrl, withAttachmentUrl } = require("../utils/fileUrlView");
+const paginate = require("../utils/paginate");
 
 const isAssigned = (req, batchId) =>
   (req.user.batches || []).some((b) => String(b) === String(batchId));
@@ -80,9 +81,13 @@ exports.listAssignments = async (req, res) => {
       return res.status(403).json({ message: "Not authorized" });
     }
 
-    const [assignments, studentCount] = await Promise.all([
-      Assignment.find({ batch }).sort({ dueDate: 1 }),
+    const { page, limit, skip } = paginate(req);
+    const filter = { batch };
+
+    const [assignments, studentCount, total] = await Promise.all([
+      Assignment.find(filter).sort({ dueDate: 1 }).skip(skip).limit(limit),
       User.countDocuments({ role: "student", admin: req.user.admin, batch, isActive: true }),
+      Assignment.countDocuments(filter),
     ]);
 
     const counts = await AssignmentSubmission.aggregate([
@@ -104,6 +109,10 @@ exports.listAssignments = async (req, res) => {
         createdAt: a.createdAt,
         updatedAt: a.updatedAt,
       })),
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
     });
   } catch (err) {
     res.status(500).json({ message: "Server error" });

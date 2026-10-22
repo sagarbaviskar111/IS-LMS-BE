@@ -3,12 +3,20 @@ const Assignment = require("../models/Assignment");
 const AssignmentSubmission = require("../models/AssignmentSubmission");
 const { uploadFile, deleteFile, resolveResourceType } = require("../utils/cloudinary");
 const { withFileUrl, withAttachmentUrl } = require("../utils/fileUrlView");
+const paginate = require("../utils/paginate");
 
 exports.listAssignments = async (req, res) => {
   try {
-    if (!req.user.batch) return res.json({ assignments: [] });
+    const { page, limit, skip } = paginate(req);
+    if (!req.user.batch) {
+      return res.json({ assignments: [], total: 0, page, limit, totalPages: 1 });
+    }
 
-    const assignments = await Assignment.find({ batch: req.user.batch }).sort({ dueDate: 1 });
+    const filter = { batch: req.user.batch };
+    const [assignments, total] = await Promise.all([
+      Assignment.find(filter).sort({ dueDate: 1 }).skip(skip).limit(limit),
+      Assignment.countDocuments(filter),
+    ]);
     const submissions = await AssignmentSubmission.find({
       assignment: { $in: assignments.map((a) => a._id) },
       student: req.user._id,
@@ -42,6 +50,10 @@ exports.listAssignments = async (req, res) => {
           overdue,
         };
       }),
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
     });
   } catch (err) {
     res.status(500).json({ message: "Server error" });

@@ -1,4 +1,5 @@
 const Tool = require("../models/Tool");
+const paginate = require("../utils/paginate");
 
 const isValidUrl = (url) => /^https?:\/\/.+/i.test(url.trim());
 
@@ -24,8 +25,13 @@ exports.createTool = async (req, res) => {
 
 exports.listTools = async (req, res) => {
   try {
-    const tools = await Tool.find({ admin: req.user._id }).sort({ name: 1 });
-    res.json({ tools });
+    const { page, limit, skip } = paginate(req);
+    const filter = { admin: req.user._id };
+    const [tools, total] = await Promise.all([
+      Tool.find(filter).sort({ name: 1 }).skip(skip).limit(limit),
+      Tool.countDocuments(filter),
+    ]);
+    res.json({ tools, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
@@ -71,8 +77,13 @@ exports.deleteTool = async (req, res) => {
 // Read-only — teachers/students see the tools their own admin added.
 exports.listMyInstituteTools = async (req, res) => {
   try {
-    const tools = await Tool.find({ admin: req.user.admin }).sort({ name: 1 });
-    res.json({ tools });
+    const { page, limit, skip } = paginate(req);
+    const filter = { admin: req.user.admin };
+    const [tools, total] = await Promise.all([
+      Tool.find(filter).sort({ name: 1 }).skip(skip).limit(limit),
+      Tool.countDocuments(filter),
+    ]);
+    res.json({ tools, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }

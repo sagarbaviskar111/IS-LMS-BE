@@ -1,5 +1,6 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
+const { getFileUrl } = require("../utils/cloudinary");
 
 const ROLES = ["superadmin", "admin", "student", "teacher", "telecaller"];
 
@@ -10,6 +11,12 @@ const userSchema = new mongoose.Schema(
     password: { type: String, required: true, minlength: 6, select: false },
     role: { type: String, enum: ROLES, required: true },
     phone: { type: String, trim: true },
+    // Profile photo — every role can set their own (distinct from the
+    // admin-only institute `logo` below).
+    avatar: {
+      cloudinaryPublicId: { type: String, default: null },
+      cloudinaryResourceType: { type: String, default: null },
+    },
     isActive: { type: Boolean, default: true },
     // True only for self-registered accounts awaiting their first admin approval.
     // Separate from isActive so deactivating an already-approved user later
@@ -26,6 +33,11 @@ const userSchema = new mongoose.Schema(
     telecallerInviteCode: { type: String, unique: true, sparse: true },
     // Students belong to exactly one batch.
     batch: { type: mongoose.Schema.Types.ObjectId, ref: "Batch", default: null },
+    // Course the student enrolled in through its registration link (if any).
+    course: { type: mongoose.Schema.Types.ObjectId, ref: "Course", default: null },
+    // False for a student the admin registered by hand who hasn't yet finished
+    // their registration (documents, signature, face check). Always true otherwise.
+    registrationComplete: { type: Boolean, default: true },
     // Teachers can be assigned to multiple batches.
     batches: [{ type: mongoose.Schema.Types.ObjectId, ref: "Batch" }],
 
@@ -101,6 +113,15 @@ const userSchema = new mongoose.Schema(
       appPassword: { type: String, default: null, select: false },
     },
 
+    // A telecaller's own saved one-tap messages for WhatsApp / SMS / email.
+    // Text may contain {name}, {caller} and {institute} placeholders.
+    // False until they first save a change — until then they see the starter set.
+    quickMessagesCustomized: { type: Boolean, default: false },
+    quickMessages: {
+      type: [{ label: { type: String, trim: true, maxlength: 40 }, text: { type: String, trim: true, maxlength: 1000 } }],
+      default: [],
+    },
+
     // --- YouTube integration (admin only) ---
     // Each coaching class connects its own YouTube channel; teachers under
     // that admin then upload session recordings straight to it as unlisted
@@ -118,6 +139,29 @@ const userSchema = new mongoose.Schema(
       channelTitle: { type: String, default: null },
       refreshToken: { type: String, default: null, select: false },
       connectedAt: { type: Date, default: null },
+    },
+
+    // --- Video storage flow (admin only) ---
+    // Which backend this institute's session recordings go to. Chosen by the
+    // superadmin per institute (admins can't switch it themselves): "youtube"
+    // uploads to the admin's own YouTube channel, "storage" uploads to the
+    // admin's own S3-compatible bucket (AWS S3 or Cloudflare R2). Existing
+    // recordings keep playing from wherever they were uploaded regardless of
+    // later switches.
+    videoFlow: { type: String, enum: ["youtube", "storage"], default: "youtube" },
+    videoStorage: {
+      provider: { type: String, enum: ["s3", "r2", null], default: null },
+      accessKeyId: { type: String, default: null },
+      secretAccessKey: { type: String, default: null, select: false },
+      bucket: { type: String, default: null },
+      // AWS region, or "auto" for R2.
+      region: { type: String, default: null },
+      // Custom endpoint — set for R2 (https://<accountId>.r2.cloudflarestorage.com).
+      endpoint: { type: String, default: null },
+      // True only after a real write/read/delete round-trip succeeded with
+      // these exact credentials.
+      verified: { type: Boolean, default: false },
+      verifiedAt: { type: Date, default: null },
     },
 
     // --- Institute branding (admin only) ---
@@ -160,7 +204,12 @@ userSchema.set("toJSON", {
       delete ret.youtube.refreshToken;
       delete ret.youtube.googleClientSecret;
     }
+    if (ret.videoStorage) delete ret.videoStorage.secretAccessKey;
     if (ret.emailSender) delete ret.emailSender.appPassword;
+    ret.avatarUrl = ret.avatar?.cloudinaryPublicId
+      ? getFileUrl(ret.avatar.cloudinaryPublicId, ret.avatar.cloudinaryResourceType)
+      : null;
+    delete ret.avatar;
     return ret;
   },
 });

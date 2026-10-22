@@ -4,6 +4,14 @@ const Payment = require("../models/Payment");
 const { CALL_RESPONSES } = require("../models/Lead");
 const crypto = require("crypto");
 const paginate = require("../utils/paginate");
+const {
+  buildLeadFilter,
+  buildLeadSort,
+  leadSources,
+  invalidLeadIds,
+  applyInvalidFilter,
+  deleteInvalidLeads,
+} = require("../utils/leadFilters");
 const { DAY_MS } = require("../utils/paymentCycle");
 
 const loadOwnedLead = async (req) => {
@@ -12,17 +20,82 @@ const loadOwnedLead = async (req) => {
   return { lead };
 };
 
+const QUICK_MESSAGE_DEFAULTS = require("../utils/quickMessageDefaults");
+const MAX_QUICK_MESSAGES = 30;
+
+exports.getQuickMessages = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select("quickMessages quickMessagesCustomized");
+    // Until they've changed anything, show the starter set (not stored yet).
+    if (!user?.quickMessagesCustomized && !user?.quickMessages?.length) return res.json({ messages: QUICK_MESSAGE_DEFAULTS, customized: false });
+    res.json({ messages: user.quickMessages.map((m) => ({ _id: m._id, label: m.label, text: m.text })), customized: true });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Replaces the caller's whole list (the UI adds / edits / removes and saves).
+// An empty list is allowed — they may want no quick messages at all.
+exports.saveQuickMessages = async (req, res) => {
+  try {
+    const raw = Array.isArray(req.body?.messages) ? req.body.messages : null;
+    if (!raw) return res.status(400).json({ message: "messages must be a list" });
+    if (raw.length > MAX_QUICK_MESSAGES) {
+      return res.status(400).json({ message: `You can save up to ${MAX_QUICK_MESSAGES} quick messages` });
+    }
+    const messages = [];
+    for (const m of raw) {
+      const label = String(m?.label ?? "").trim();
+      const text = String(m?.text ?? "").trim();
+      if (!label || !text) return res.status(400).json({ message: "Each quick message needs a name and a message" });
+      if (label.length > 40) return res.status(400).json({ message: "Name can be at most 40 characters" });
+      if (text.length > 1000) return res.status(400).json({ message: "Message can be at most 1000 characters" });
+      messages.push({ label, text });
+    }
+    const user = await User.findById(req.user._id);
+    user.quickMessages = messages;
+    user.quickMessagesCustomized = true;
+    await user.save();
+    res.json({ messages: user.quickMessages.map((m) => ({ _id: m._id, label: m.label, text: m.text })), customized: true });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.mySourceOptions = async (req, res) => {
+  try {
+    res.json({ sources: await leadSources({ assignedTelecaller: req.user._id }) });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
 exports.listMyLeads = async (req, res) => {
   try {
-    const filter = { assignedTelecaller: req.user._id };
+    const scope = { assignedTelecaller: req.user._id };
+    const filter = await applyInvalidFilter(req.query, buildLeadFilter(req.query, scope));
     const { page, limit, skip } = paginate(req);
 
-    const [leads, total] = await Promise.all([
-      Lead.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+    const [leads, total, invalidCount] = await Promise.all([
+      Lead.find(filter).sort(buildLeadSort(req.query)).skip(skip).limit(limit),
       Lead.countDocuments(filter),
+      invalidLeadIds(scope).then((ids) => ids.length),
     ]);
 
-    res.json({ leads, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
+    res.json({ leads, total, invalidCount, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.deleteMyInvalidLeads = async (req, res) => {
+  try {
+    const { ids, all } = req.body || {};
+    if (all !== true && !(Array.isArray(ids) && ids.length)) {
+      return res.status(400).json({ message: "Select at least one lead" });
+    }
+    const deleted = await deleteInvalidLeads({ assignedTelecaller: req.user._id }, { ids, all: all === true });
+    res.json({ deleted });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
@@ -41,20 +114,92 @@ exports.getLead = async (req, res) => {
   }
 };
 
+const CLOSED_STATUSES = ["not_interested", "wrong_number", "lost"];
+
+// Set or clear a lead's follow-up reminder without logging a call.
+exports.setFollowUp = async (req, res) => {
+  try {
+    const { lead, error } = await loadOwnedLead(req);
+    if (error) return res.status(error[0]).json({ message: error[1] });
+
+    const { followUpAt } = req.body;
+    if (followUpAt === null || followUpAt === "") {
+      lead.followUpAt = null;
+    } else {
+      const when = new Date(followUpAt);
+      if (Number.isNaN(when.getTime())) {
+        return res.status(400).json({ message: "Invalid follow-up date" });
+      }
+      lead.followUpAt = when;
+    }
+    await lead.save();
+    res.json({ lead });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Counts for the caller's dashboard + quick-filter chips.
+exports.leadSummary = async (req, res) => {
+  try {
+    const scope = { assignedTelecaller: req.user._id };
+    const now = new Date();
+    const d = (v, fallback) => {
+      const t = new Date(v);
+      return Number.isNaN(t.getTime()) ? fallback : t;
+    };
+    const dayStart = d(req.query.dayStart, new Date(now.getFullYear(), now.getMonth(), now.getDate()));
+    const dayEnd = d(req.query.dayEnd, new Date(dayStart.getTime() + 24 * 60 * 60 * 1000 - 1));
+    const open = { $nin: ["converted", ...CLOSED_STATUSES] };
+
+    const [byStatus, overdue, today, invalidIds] = await Promise.all([
+      Lead.aggregate([{ $match: scope }, { $group: { _id: "$status", count: { $sum: 1 } } }]),
+      Lead.countDocuments({ ...scope, status: open, followUpAt: { $lt: now } }),
+      Lead.countDocuments({ ...scope, status: open, followUpAt: { $gte: dayStart, $lte: dayEnd } }),
+      invalidLeadIds(scope),
+    ]);
+
+    const counts = Object.fromEntries(byStatus.map((r) => [r._id, r.count]));
+    res.json({
+      total: byStatus.reduce((n, r) => n + r.count, 0),
+      byStatus: counts,
+      overdue,
+      today,
+      invalidCount: invalidIds.length,
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
 exports.logCall = async (req, res) => {
   try {
     const { lead, error } = await loadOwnedLead(req);
     if (error) return res.status(error[0]).json({ message: error[1] });
 
-    const { response, notes } = req.body;
+    if (lead.convertedStudent) {
+      return res.status(400).json({ message: "This lead has already been converted" });
+    }
+
+    const { response, notes, followUpAt } = req.body;
     if (!CALL_RESPONSES.includes(response)) {
       return res.status(400).json({ message: "Invalid response value" });
     }
 
     lead.callLogs.push({ calledBy: req.user._id, response, notes });
-    if (response === "interested") lead.status = "interested";
-    else if (response === "not_interested") lead.status = "not_interested";
-    else if (lead.status === "new") lead.status = "contacted";
+    // The call outcome IS the lead's new status — one shared list.
+    lead.status = response;
+
+    // Closed-out outcomes drop any reminder; open ones may set a new one.
+    if (CLOSED_STATUSES.includes(response)) {
+      lead.followUpAt = null;
+    } else if (followUpAt) {
+      const when = new Date(followUpAt);
+      if (Number.isNaN(when.getTime())) {
+        return res.status(400).json({ message: "Invalid follow-up date" });
+      }
+      lead.followUpAt = when;
+    }
 
     await lead.save();
     const populated = await lead.populate("callLogs.calledBy", "name email");

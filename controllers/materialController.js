@@ -6,6 +6,13 @@ const { resolveType, DOCUMENT_MAX_SIZE } = require("../utils/upload");
 const { uploadFile, deleteFile } = require("../utils/cloudinary");
 const { withFileUrl } = require("../utils/fileUrlView");
 const { uploadVideo, describeYoutubeError } = require("../utils/youtube");
+const {
+  uploadVideoToStorage,
+  attachPlaybackUrls,
+  deleteStoredVideo,
+  describeStorageError,
+} = require("../utils/objectStorage");
+const paginate = require("../utils/paginate");
 
 const isAssigned = (req, batchId) =>
   (req.user.batches || []).some((b) => String(b) === String(batchId));
@@ -71,11 +78,33 @@ exports.uploadMaterial = async (req, res) => {
 
     let youtubeVideoId = null;
     let youtubeUrl = null;
+    let storageKey = null;
+    let storageProvider = null;
     let cloudinaryPublicId = null;
     let cloudinaryResourceType = null;
 
-    if (type === "video") {
-      const adminUser = await User.findById(req.user.admin);
+    const adminUser = type === "video" ? await User.findById(req.user.admin) : null;
+
+    if (type === "video" && adminUser && adminUser.videoFlow === "storage") {
+      if (!adminUser.videoStorage || !adminUser.videoStorage.verified) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(400).json({
+          message: "Your institute hasn't set up its storage server yet — ask your admin to finish Settings > Video Storage.",
+        });
+      }
+      try {
+        const result = await uploadVideoToStorage(req.user.admin, req.file.path, {
+          fileName: req.file.originalname,
+          mimeType: req.file.mimetype,
+        });
+        storageKey = result.key;
+        storageProvider = result.provider;
+      } catch (err) {
+        fs.unlink(req.file.path, () => {});
+        console.error(`[storage-upload] failed for admin ${req.user.admin}:`, err?.name || err?.message || err);
+        return res.status(502).json({ message: describeStorageError(err) });
+      }
+    } else if (type === "video") {
       if (!adminUser || !adminUser.youtube || !adminUser.youtube.connected) {
         fs.unlink(req.file.path, () => {});
         return res.status(400).json({
@@ -133,9 +162,12 @@ exports.uploadMaterial = async (req, res) => {
       mimeType: req.file.mimetype,
       youtubeVideoId,
       youtubeUrl,
+      storageKey,
+      storageProvider,
     });
 
-    res.status(201).json({ material: withFileUrl(material) });
+    const [view] = await attachPlaybackUrls(req.user.admin, [withFileUrl(material)]);
+    res.status(201).json({ material: view });
   } catch (err) {
     if (req.file) fs.unlink(req.file.path, () => {});
     res.status(500).json({ message: "Server error" });
@@ -144,16 +176,31 @@ exports.uploadMaterial = async (req, res) => {
 
 exports.listMaterials = async (req, res) => {
   try {
-    const { batch } = req.query;
+    const { batch, type } = req.query;
     if (!batch) return res.status(400).json({ message: "batch is required" });
     if (!isAssigned(req, batch)) {
       return res.status(403).json({ message: "Not authorized" });
     }
 
-    const materials = await Material.find({ batch })
-      .populate("session", "topic date startTime endTime")
-      .sort({ createdAt: -1 });
-    res.json({ materials: materials.map(withFileUrl) });
+    const { page, limit, skip } = paginate(req);
+    const filter = { batch };
+    if (type) filter.type = type;
+
+    const [materials, total] = await Promise.all([
+      Material.find(filter)
+        .populate("session", "topic date startTime endTime")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      Material.countDocuments(filter),
+    ]);
+    res.json({
+      materials: await attachPlaybackUrls(req.user.admin, materials.map(withFileUrl)),
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
@@ -170,6 +217,10 @@ exports.deleteMaterial = async (req, res) => {
     await material.deleteOne();
     if (material.cloudinaryPublicId) {
       await deleteFile(material.cloudinaryPublicId, material.cloudinaryResourceType);
+    }
+    if (material.storageKey) {
+      // Best effort — a failure here shouldn't block removing the record.
+      await deleteStoredVideo(material.admin, material.storageKey).catch(() => {});
     }
 
     res.json({ message: "Material deleted" });

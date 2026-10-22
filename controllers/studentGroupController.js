@@ -1,5 +1,6 @@
 const StudentGroup = require("../models/StudentGroup");
 const User = require("../models/User");
+const paginate = require("../utils/paginate");
 
 // Validates that every id belongs to a student in this admin's tenant.
 const resolveGroupStudents = async (adminId, studentIds) => {
@@ -41,11 +42,14 @@ exports.createGroup = async (req, res) => {
 
 exports.listGroups = async (req, res) => {
   try {
-    const groups = await StudentGroup.find({ admin: req.user._id })
-      .populate("students", "name email")
-      .sort({ name: 1 });
+    const { page, limit, skip } = paginate(req);
+    const filter = { admin: req.user._id };
+    const [groups, total] = await Promise.all([
+      StudentGroup.find(filter).populate("students", "name email").sort({ name: 1 }).skip(skip).limit(limit),
+      StudentGroup.countDocuments(filter),
+    ]);
 
-    res.json({ groups });
+    res.json({ groups, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }

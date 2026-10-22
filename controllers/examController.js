@@ -1,5 +1,6 @@
 const Exam = require("../models/Exam");
 const Submission = require("../models/Submission");
+const paginate = require("../utils/paginate");
 
 const isAssigned = (req, batchId) =>
   (req.user.batches || []).some((b) => String(b) === String(batchId));
@@ -49,8 +50,19 @@ exports.listExams = async (req, res) => {
       return res.status(403).json({ message: "Not authorized" });
     }
 
-    const exams = await Exam.find({ batch }).sort({ createdAt: -1 });
-    res.json({ exams: exams.map(summarize) });
+    const { page, limit, skip } = paginate(req);
+    const filter = { batch };
+    const [exams, total] = await Promise.all([
+      Exam.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Exam.countDocuments(filter),
+    ]);
+    res.json({
+      exams: exams.map(summarize),
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }

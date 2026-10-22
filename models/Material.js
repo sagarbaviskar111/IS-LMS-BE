@@ -18,7 +18,7 @@ const materialSchema = new mongoose.Schema(
       type: String,
       default: null,
       required: function () {
-        return !this.youtubeVideoId;
+        return !this.youtubeVideoId && !this.storageKey;
       },
     },
     cloudinaryResourceType: { type: String, default: null },
@@ -28,6 +28,10 @@ const materialSchema = new mongoose.Schema(
     // channel as unlisted videos instead of being stored as a document.
     youtubeVideoId: { type: String, default: null },
     youtubeUrl: { type: String, default: null },
+    // Recordings uploaded to the institute's own S3/R2 bucket. The key is
+    // never sent to clients — playback goes through a short-lived signed URL.
+    storageKey: { type: String, default: null },
+    storageProvider: { type: String, default: null },
   },
   { timestamps: true }
 );

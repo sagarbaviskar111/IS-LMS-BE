@@ -1,14 +1,19 @@
 const Exam = require("../models/Exam");
 const Submission = require("../models/Submission");
+const paginate = require("../utils/paginate");
 
 exports.listExams = async (req, res) => {
   try {
-    if (!req.user.batch) return res.json({ exams: [] });
+    const { page, limit, skip } = paginate(req);
+    if (!req.user.batch) {
+      return res.json({ exams: [], total: 0, page, limit, totalPages: 1 });
+    }
 
-    const exams = await Exam.find({
-      batch: req.user.batch,
-      status: { $in: ["published", "closed"] },
-    }).sort({ createdAt: -1 });
+    const filter = { batch: req.user.batch, status: { $in: ["published", "closed"] } };
+    const [exams, total] = await Promise.all([
+      Exam.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Exam.countDocuments(filter),
+    ]);
 
     const submissions = await Submission.find({
       exam: { $in: exams.map((e) => e._id) },
@@ -31,6 +36,10 @@ exports.listExams = async (req, res) => {
           score: e.resultsAnnounced && submission ? submission.score : null,
         };
       }),
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
     });
   } catch (err) {
     res.status(500).json({ message: "Server error" });

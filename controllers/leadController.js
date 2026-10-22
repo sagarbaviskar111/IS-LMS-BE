@@ -3,6 +3,15 @@ const Lead = require("../models/Lead");
 const User = require("../models/User");
 const Payment = require("../models/Payment");
 const paginate = require("../utils/paginate");
+const {
+  buildLeadFilter,
+  buildLeadSort,
+  leadSources,
+  invalidLeadIds,
+  applyInvalidFilter,
+  deleteInvalidLeads,
+} = require("../utils/leadFilters");
+const { normalizePhone, normalizeEmail } = require("../utils/validators");
 const { DAY_MS } = require("../utils/paymentCycle");
 
 // Round-robin: whichever active telecaller currently has the fewest leads gets the next one,
@@ -28,6 +37,8 @@ const assignTelecaller = async (adminId) => {
   }
   return chosen._id;
 };
+
+exports.assignTelecaller = assignTelecaller;
 
 exports.createLead = async (req, res) => {
   try {
@@ -71,20 +82,33 @@ exports.ingestWebhookLead = async (req, res) => {
       return res.status(401).json({ message: "Invalid webhook key" });
     }
 
-    const { name, phone, email, notes, source } = req.body;
-    if (!name || !phone) {
+    const { name, phone, email, notes, source } = req.body || {};
+    const cleanName = String(name ?? "")
+      .trim()
+      .replace(/\s+/g, " ");
+    if (cleanName.length < 2 || !String(phone ?? "").trim()) {
       return res.status(400).json({ message: "name and phone are required" });
     }
-    const cleanPhone = String(phone).trim();
+    // Same phone rules as everywhere else (so "+91 98765-43210", 9876543210
+    // and 919876543210 are all the same lead). The message is shown to whoever
+    // set the integration up (e.g. in the Google Sheet's "Lead Sync" column).
+    const cleanPhone = normalizePhone(phone);
+    if (!cleanPhone) {
+      return res.status(400).json({ message: `Invalid phone number "${String(phone).slice(0, 30)}"` });
+    }
+    // A malformed email shouldn't throw away an otherwise good lead.
+    const cleanEmail = String(email ?? "").trim() ? normalizeEmail(email) || undefined : undefined;
+    const cleanNotes = String(notes ?? "").trim().slice(0, 1000) || undefined;
 
     // Re-sent on every edit (a Google Sheet trigger fires on any change to
     // the sheet, not just new rows) — match on phone within this admin's
     // leads and update in place instead of piling up duplicates.
     const existing = await Lead.findOne({ admin: admin._id, phone: cleanPhone });
     if (existing) {
-      existing.name = name;
-      if (email !== undefined) existing.email = email;
-      if (notes !== undefined) existing.notes = notes;
+      existing.name = cleanName;
+      // A blank cell in the sheet must not wipe what's already saved.
+      if (cleanEmail) existing.email = cleanEmail;
+      if (cleanNotes) existing.notes = cleanNotes;
       await existing.save();
       return res.json({ message: "Lead updated", lead: existing });
     }
@@ -93,10 +117,10 @@ exports.ingestWebhookLead = async (req, res) => {
     const lead = await Lead.create({
       admin: admin._id,
       createdBy: admin._id,
-      name,
+      name: cleanName,
       phone: cleanPhone,
-      email,
-      notes,
+      email: cleanEmail,
+      notes: cleanNotes,
       assignedTelecaller,
       source: "webhook",
       sourceLabel: source ? String(source).trim().slice(0, 60) : "External",
@@ -107,23 +131,148 @@ exports.ingestWebhookLead = async (req, res) => {
   }
 };
 
+const MAX_BULK_LEADS = 500;
+
+// POST /api/leads/bulk — rows parsed from an Excel/CSV file in the browser.
+// Each row is checked on its own: a bad row is skipped with a reason and
+// never blocks the good ones.
+exports.bulkCreateLeads = async (req, res) => {
+  try {
+    const { rows } = req.body;
+    if (!Array.isArray(rows) || rows.length === 0) {
+      return res.status(400).json({ message: "rows must be a non-empty array" });
+    }
+    if (rows.length > MAX_BULK_LEADS) {
+      return res.status(400).json({ message: `Upload at most ${MAX_BULK_LEADS} rows at a time` });
+    }
+    const fileName = String(req.body.fileName || "")
+      .trim()
+      .slice(0, 60);
+
+    const telecallers = await User.find({ admin: req.user._id, role: "telecaller", isActive: true }).select("_id email");
+    const telecallerByEmail = new Map(telecallers.map((t) => [t.email.toLowerCase(), t._id]));
+
+    const created = [];
+    const skipped = [];
+    const seen = new Set();
+
+    for (let i = 0; i < rows.length; i++) {
+      const raw = rows[i] || {};
+      const row = i + 2; // spreadsheet row number: 1 is the header
+      const name = String(raw.name ?? "")
+        .trim()
+        .replace(/\s+/g, " ");
+      const rawPhone = String(raw.phone ?? "").trim();
+      const skip = (reason) => skipped.push({ row, name, phone: rawPhone, reason });
+
+      if (name.length < 2 || name.length > 100) {
+        skip("Name is required (2–100 characters)");
+        continue;
+      }
+      if (!rawPhone) {
+        skip("Phone is required");
+        continue;
+      }
+      const phone = normalizePhone(rawPhone);
+      if (!phone) {
+        skip("Invalid phone number");
+        continue;
+      }
+      let email;
+      if (String(raw.email ?? "").trim()) {
+        email = normalizeEmail(raw.email);
+        if (!email) {
+          skip("Invalid email address");
+          continue;
+        }
+      }
+      if (seen.has(phone)) {
+        skip("Duplicate phone number in this file");
+        continue;
+      }
+      if (await Lead.exists({ admin: req.user._id, phone })) {
+        seen.add(phone);
+        skip("Already in your leads");
+        continue;
+      }
+
+      let assignedTelecaller;
+      const callerEmail = String(raw.telecaller ?? "")
+        .trim()
+        .toLowerCase();
+      if (callerEmail) {
+        assignedTelecaller = telecallerByEmail.get(callerEmail);
+        if (!assignedTelecaller) {
+          skip(`No active telecaller with email "${callerEmail}"`);
+          continue;
+        }
+      } else {
+        assignedTelecaller = await assignTelecaller(req.user._id);
+      }
+
+      await Lead.create({
+        admin: req.user._id,
+        createdBy: req.user._id,
+        name,
+        phone,
+        email,
+        notes: String(raw.notes ?? "")
+          .trim()
+          .slice(0, 1000),
+        assignedTelecaller,
+        source: "import",
+        sourceLabel: fileName || "Excel/CSV upload",
+      });
+      seen.add(phone);
+      created.push({ row, name, phone, assigned: !!assignedTelecaller });
+    }
+
+    res.status(201).json({ created, skipped, noTelecallers: telecallers.length === 0 });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.leadSourceOptions = async (req, res) => {
+  try {
+    res.json({ sources: await leadSources({ admin: req.user._id }) });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
 exports.listLeads = async (req, res) => {
   try {
-    const filter = { admin: req.user._id };
+    const scope = { admin: req.user._id };
+    const filter = await applyInvalidFilter(req.query, buildLeadFilter(req.query, scope, { allowTelecaller: true }));
     const { page, limit, skip } = paginate(req);
 
-    const [leads, total] = await Promise.all([
+    const [leads, total, invalidCount] = await Promise.all([
       Lead.find(filter)
         .populate("assignedTelecaller", "name email")
         .populate("convertedStudent", "name email")
         .populate("convertedBy", "name email role")
-        .sort({ createdAt: -1 })
+        .sort(buildLeadSort(req.query))
         .skip(skip)
         .limit(limit),
       Lead.countDocuments(filter),
+      invalidLeadIds(scope).then((ids) => ids.length),
     ]);
 
-    res.json({ leads, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
+    res.json({ leads, total, invalidCount, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.deleteInvalidLeads = async (req, res) => {
+  try {
+    const { ids, all } = req.body || {};
+    if (all !== true && !(Array.isArray(ids) && ids.length)) {
+      return res.status(400).json({ message: "Select at least one lead" });
+    }
+    const deleted = await deleteInvalidLeads({ admin: req.user._id }, { ids, all: all === true });
+    res.json({ deleted });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }

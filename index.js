@@ -8,6 +8,9 @@ const connectDB = require("./config/db");
 const authRoutes = require("./routes/authRoutes");
 const userRoutes = require("./routes/userRoutes");
 const batchRoutes = require("./routes/batchRoutes");
+const courseRoutes = require("./routes/courseRoutes");
+const courseRegistrationRoutes = require("./routes/courseRegistrationRoutes");
+const enrollmentRoutes = require("./routes/enrollmentRoutes");
 const studentGroupRoutes = require("./routes/studentGroupRoutes");
 const teacherRoutes = require("./routes/teacherRoutes");
 const studentRoutes = require("./routes/studentRoutes");
@@ -17,10 +20,13 @@ const notificationRoutes = require("./routes/notificationRoutes");
 const messageRoutes = require("./routes/messageRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
 const youtubeRoutes = require("./routes/youtubeRoutes");
+const storageRoutes = require("./routes/storageRoutes");
 const toolRoutes = require("./routes/toolRoutes");
 const jobRoutes = require("./routes/jobRoutes");
+const superadminRoutes = require("./routes/superadminRoutes");
 const instituteRoutes = require("./routes/instituteRoutes");
 const portfolioRoutes = require("./routes/portfolioRoutes");
+const inquiryFormRoutes = require("./routes/inquiryFormRoutes");
 const User = require("./models/User");
 const { runPaymentCycleCheck } = require("./utils/paymentCycle");
 
@@ -37,7 +43,12 @@ connectDB();
 
 app.use(
   cors({
-    origin: process.env.FRONTEND_URL || "http://localhost:3000",
+    // In development also accept localhost, so the site works both on this PC
+    // (localhost:3000) and from a phone (http://<LAN IP>:3000).
+    origin:
+      process.env.NODE_ENV === "production"
+        ? process.env.FRONTEND_URL || "http://localhost:3000"
+        : [process.env.FRONTEND_URL, "http://localhost:3000"].filter(Boolean),
     credentials: true,
   })
 );
@@ -51,6 +62,9 @@ app.get("/", (req, res) => {
 app.use("/api/auth", authRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/batches", batchRoutes);
+app.use("/api/courses", courseRoutes);
+app.use("/api/course-registration", courseRegistrationRoutes);
+app.use("/api/enrollments", enrollmentRoutes);
 app.use("/api/student-groups", studentGroupRoutes);
 app.use("/api/teacher", teacherRoutes);
 app.use("/api/student", studentRoutes);
@@ -60,10 +74,13 @@ app.use("/api/notifications", notificationRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/admin/youtube", youtubeRoutes);
+app.use("/api/admin/storage", storageRoutes);
 app.use("/api/tools", toolRoutes);
 app.use("/api/jobs", jobRoutes);
+app.use("/api/superadmin", superadminRoutes);
 app.use("/api/institutes", instituteRoutes);
 app.use("/api/portfolio", portfolioRoutes);
+app.use("/api/inquiry-forms", inquiryFormRoutes);
 
 // Catches file-upload failures (oversized file, wrong type) from any multer
 // instance in the app and returns clean JSON instead of Express's default

@@ -1,6 +1,68 @@
 const Batch = require("../models/Batch");
 const User = require("../models/User");
 const paginate = require("../utils/paginate");
+const mongoose = require("mongoose");
+const { searchRegex, pickSort, CASE_INSENSITIVE } = require("../utils/listQuery");
+const Course = require("../models/Course");
+
+const MODES = ["online", "offline", "hybrid"];
+
+// Validates the batch details sent by the admin. Returns { error } or { data }.
+// With partial=true only the keys present are checked (PATCH).
+const parseBatch = async (adminId, body, { partial, current }) => {
+  const data = {};
+  const has = (k) => body[k] !== undefined;
+
+  if (has("name") || !partial) {
+    const name = String(body.name || "").trim();
+    if (!name) return { error: "Batch name is required" };
+    data.name = name;
+  }
+  if (has("description")) data.description = String(body.description || "").trim();
+
+  if (has("course") || !partial) {
+    if (!body.course) {
+      if (!partial) return { error: "Select a course for this batch" };
+    } else {
+      const course = await Course.findOne({ _id: body.course, admin: adminId }).catch(() => null);
+      if (!course) return { error: "Selected course was not found" };
+      data.course = course._id;
+      // Mode defaults to the course's mode unless the admin picked one.
+      if (!has("mode")) data.mode = course.mode;
+    }
+  }
+  if (has("mode")) {
+    if (!MODES.includes(body.mode)) return { error: "Invalid batch mode" };
+    data.mode = body.mode;
+  }
+  for (const key of ["startDate", "endDate"]) {
+    if (has(key)) {
+      if (!body[key]) data[key] = null;
+      else {
+        const d = new Date(body[key]);
+        if (Number.isNaN(d.getTime())) return { error: `Invalid ${key === "startDate" ? "start" : "end"} date` };
+        data[key] = d;
+      }
+    }
+  }
+  if (has("maxStudents") || !partial) {
+    const n = Number(body.maxStudents || 0);
+    if (!Number.isInteger(n) || n < 0) return { error: "Number of students must be a whole number" };
+    data.maxStudents = n;
+  }
+
+  const start = "startDate" in data ? data.startDate : current?.startDate;
+  const end = "endDate" in data ? data.endDate : current?.endDate;
+  if (start && end && end < start) return { error: "End date must be after the start date" };
+  if ("maxStudents" in data && data.maxStudents > 0 && current) {
+    const enrolled = await User.countDocuments({ admin: adminId, role: "student", batch: current._id });
+    if (enrolled > data.maxStudents) {
+      return { error: `This batch already has ${enrolled} students — number of students can't be lower` };
+    }
+  }
+  return { data };
+};
+
 
 // Students: replace semantics — the given list becomes the batch's full roster,
 // which naturally moves a student off whatever batch they were on before.
@@ -47,29 +109,13 @@ const applyMembers = async (adminId, batchId, { studentIds, teacherIds }) => {
 
 exports.createBatch = async (req, res) => {
   try {
-    const { name, description, studentIds, teacherIds, defaultFee, paymentCycleDays } = req.body;
-    if (!name) {
-      return res.status(400).json({ message: "name is required" });
-    }
+    const { error, data } = await parseBatch(req.user._id, req.body || {}, { partial: false });
+    if (error) return res.status(400).json({ message: error });
 
-    const existing = await Batch.findOne({ admin: req.user._id, name });
-    if (existing) {
+    if (await Batch.findOne({ admin: req.user._id, name: data.name })) {
       return res.status(409).json({ message: "A batch with this name already exists" });
     }
-
-    const batch = await Batch.create({
-      name,
-      description,
-      admin: req.user._id,
-      defaultFee: typeof defaultFee === "number" && defaultFee >= 0 ? defaultFee : 0,
-      paymentCycleDays:
-        typeof paymentCycleDays === "number" && paymentCycleDays >= 1 ? paymentCycleDays : 30,
-    });
-
-    if (studentIds || teacherIds) {
-      await applyMembers(req.user._id, batch._id, { studentIds, teacherIds });
-    }
-
+    const batch = await Batch.create({ ...data, admin: req.user._id });
     res.status(201).json({ batch });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
@@ -79,10 +125,26 @@ exports.createBatch = async (req, res) => {
 exports.listBatches = async (req, res) => {
   try {
     const filter = { admin: req.user._id };
+    const rx = searchRegex(req.query.q);
+    if (rx) filter.name = rx;
+    if (mongoose.isValidObjectId(req.query.course)) filter.course = req.query.course;
+    if (MODES.includes(req.query.mode)) filter.mode = req.query.mode;
+    const sort = pickSort(
+      req.query.sort,
+      {
+        newest: { createdAt: -1 },
+        oldest: { createdAt: 1 },
+        name_asc: { name: 1, _id: 1 },
+        name_desc: { name: -1, _id: 1 },
+        start_asc: { startDate: 1, _id: 1 },
+        start_desc: { startDate: -1, _id: 1 },
+      },
+      "newest"
+    );
     const { page, limit, skip } = paginate(req);
 
     const [batches, total] = await Promise.all([
-      Batch.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Batch.find(filter).collation(CASE_INSENSITIVE).sort(sort).skip(skip).limit(limit).populate("course", "name"),
       Batch.countDocuments(filter),
     ]);
 
@@ -123,19 +185,15 @@ exports.updateBatch = async (req, res) => {
     const batch = await Batch.findOne({ _id: req.params.id, admin: req.user._id });
     if (!batch) return res.status(404).json({ message: "Batch not found" });
 
-    const { name, description, defaultFee, paymentCycleDays } = req.body;
+    const { error, data } = await parseBatch(req.user._id, req.body || {}, { partial: true, current: batch });
+    if (error) return res.status(400).json({ message: error });
 
-    if (name !== undefined && name !== batch.name) {
-      const existing = await Batch.findOne({ admin: req.user._id, name, _id: { $ne: batch._id } });
-      if (existing) {
+    if (data.name && data.name !== batch.name) {
+      if (await Batch.findOne({ admin: req.user._id, name: data.name, _id: { $ne: batch._id } })) {
         return res.status(409).json({ message: "A batch with this name already exists" });
       }
-      batch.name = name;
     }
-    if (description !== undefined) batch.description = description;
-    if (typeof defaultFee === "number" && defaultFee >= 0) batch.defaultFee = defaultFee;
-    if (typeof paymentCycleDays === "number" && paymentCycleDays >= 1) batch.paymentCycleDays = paymentCycleDays;
-
+    batch.set(data);
     await batch.save();
     res.json({ batch });
   } catch (err) {
@@ -149,6 +207,11 @@ exports.updateBatchMembers = async (req, res) => {
     if (!batch) return res.status(404).json({ message: "Batch not found" });
 
     const { studentIds, teacherIds } = req.body;
+    if (Array.isArray(studentIds) && batch.maxStudents > 0 && studentIds.length > batch.maxStudents) {
+      return res.status(400).json({
+        message: `This batch allows only ${batch.maxStudents} students — you selected ${studentIds.length}`,
+      });
+    }
     await applyMembers(req.user._id, batch._id, { studentIds, teacherIds });
 
     res.json({ message: "Batch members updated" });

@@ -2,14 +2,20 @@ const crypto = require("crypto");
 const User = require("../models/User");
 const Batch = require("../models/Batch");
 const Payment = require("../models/Payment");
+const StudentEnrollment = require("../models/StudentEnrollment");
 const generateInviteCode = require("../utils/inviteCode");
 const paginate = require("../utils/paginate");
+const mongoose = require("mongoose");
+const { searchRegex, pickSort, CASE_INSENSITIVE } = require("../utils/listQuery");
 const { DAY_MS } = require("../utils/paymentCycle");
 const { generateUniqueSlug } = require("../utils/slug");
 const { saveEmailCredentials } = require("../utils/email");
 
+// PUBLIC_API_URL (e.g. https://api.example.com, or an ngrok URL while testing
+// locally) wins over the request's own host: external senders like Google
+// Sheets can only reach a public address, never localhost.
 const buildWebhookUrl = (req, apiKey) => {
-  const base = `${req.protocol}://${req.get("host")}`;
+  const base = (process.env.PUBLIC_API_URL || `${req.protocol}://${req.get("host")}`).replace(/\/+$/, "");
   return `${base}/api/leads/webhook/${apiKey}`;
 };
 
@@ -306,9 +312,37 @@ exports.listUsers = async (req, res) => {
       filter.pending = { $ne: true };
     }
 
+    // ---- optional search / filters / sorting for the admin lists ----
+    const rx = searchRegex(req.query.q);
+    if (rx) filter.$or = [{ name: rx }, { email: rx }, { phone: rx }];
+    if (req.query.active === "1") filter.isActive = true;
+    if (req.query.active === "0") filter.isActive = false;
+    if (req.query.registration === "pending") filter.registrationComplete = false;
+    if (mongoose.isValidObjectId(req.query.course)) filter.course = req.query.course;
+    const batchQ = req.query.batch;
+    if (filter.role === "student") {
+      if (batchQ === "none") filter.batch = null;
+      else if (mongoose.isValidObjectId(batchQ)) filter.batch = batchQ;
+    } else if (filter.role === "teacher") {
+      if (batchQ === "none") filter.batches = { $size: 0 };
+      else if (mongoose.isValidObjectId(batchQ)) filter.batches = batchQ;
+    }
+    const sort = pickSort(
+      req.query.sort,
+      {
+        newest: { createdAt: -1 },
+        oldest: { createdAt: 1 },
+        name_asc: { name: 1, _id: 1 },
+        name_desc: { name: -1, _id: 1 },
+        email_asc: { email: 1, _id: 1 },
+        email_desc: { email: -1, _id: 1 },
+      },
+      "newest"
+    );
+
     const { page, limit, skip } = paginate(req);
     const [users, total] = await Promise.all([
-      User.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+      User.find(filter).collation(CASE_INSENSITIVE).sort(sort).skip(skip).limit(limit).populate("course", "name"),
       User.countDocuments(filter),
     ]);
     res.json({ users, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
@@ -423,6 +457,8 @@ exports.deleteUser = async (req, res) => {
     }
 
     await user.deleteOne();
+    // An admin-registered student's private registration link goes with them.
+    await StudentEnrollment.deleteMany({ student: user._id });
     res.json({ message: "User deleted" });
   } catch (err) {
     res.status(500).json({ message: "Server error" });

@@ -6,6 +6,7 @@ const User = require("../models/User");
 const Payment = require("../models/Payment");
 const paginate = require("../utils/paginate");
 const { withFileUrl } = require("../utils/fileUrlView");
+const { attachPlaybackUrls } = require("../utils/objectStorage");
 const { isRecordingBlocked } = require("../utils/recordingAccess");
 
 exports.myBatch = async (req, res) => {
@@ -20,17 +21,21 @@ exports.myBatch = async (req, res) => {
 
 exports.listSessions = async (req, res) => {
   try {
-    if (!req.user.batch) return res.json({ sessions: [] });
+    const { page, limit, skip } = paginate(req);
+    if (!req.user.batch) {
+      return res.json({ sessions: [], total: 0, page, limit, totalPages: 1 });
+    }
 
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
+    const filter = { batch: req.user.batch, date: { $gte: startOfToday } };
 
-    const sessions = await Session.find({
-      batch: req.user.batch,
-      date: { $gte: startOfToday },
-    }).sort({ date: 1, startTime: 1 });
+    const [sessions, total] = await Promise.all([
+      Session.find(filter).sort({ date: 1, startTime: 1 }).skip(skip).limit(limit),
+      Session.countDocuments(filter),
+    ]);
 
-    res.json({ sessions });
+    res.json({ sessions, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
@@ -38,8 +43,9 @@ exports.listSessions = async (req, res) => {
 
 exports.myAttendance = async (req, res) => {
   try {
+    const { page, limit, skip } = paginate(req);
     if (!req.user.batch) {
-      return res.json({ present: 0, total: 0, percentage: null, sessions: [] });
+      return res.json({ present: 0, total: 0, percentage: null, sessions: [], page, limit, totalPages: 1 });
     }
 
     const attendanceDocs = await Attendance.find({ batch: req.user.batch }).populate(
@@ -59,17 +65,22 @@ exports.myAttendance = async (req, res) => {
       sessions.push({ session: doc.session, status: record.status });
     }
 
+    // Most recent first — the aggregate present/total/percentage above still
+    // covers the full history regardless of which page of it is returned.
     sessions.sort((a, b) => {
       const da = a.session ? new Date(a.session.date).getTime() : 0;
       const db = b.session ? new Date(b.session.date).getTime() : 0;
-      return da - db;
+      return db - da;
     });
 
     res.json({
       present,
       total,
       percentage: total > 0 ? Math.round((present / total) * 1000) / 10 : null,
-      sessions,
+      sessions: sessions.slice(skip, skip + limit),
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(sessions.length / limit)),
     });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
@@ -125,10 +136,22 @@ exports.myPayments = async (req, res) => {
 
 exports.listMaterials = async (req, res) => {
   try {
-    if (!req.user.batch) return res.json({ materials: [] });
-    const materials = await Material.find({ batch: req.user.batch })
-      .populate("session", "topic date startTime endTime")
-      .sort({ createdAt: -1 });
+    const { page, limit, skip } = paginate(req);
+    if (!req.user.batch) {
+      return res.json({ materials: [], total: 0, page, limit, totalPages: 1 });
+    }
+
+    const filter = { batch: req.user.batch };
+    if (req.query.type) filter.type = req.query.type;
+
+    const [materials, total] = await Promise.all([
+      Material.find(filter)
+        .populate("session", "topic date startTime endTime")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit),
+      Material.countDocuments(filter),
+    ]);
 
     const result = materials.map((m) => {
       const view = withFileUrl(m);
@@ -140,8 +163,9 @@ exports.listMaterials = async (req, res) => {
       }
       return view;
     });
+    await attachPlaybackUrls(req.user.admin, result);
 
-    res.json({ materials: result });
+    res.json({ materials: result, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }

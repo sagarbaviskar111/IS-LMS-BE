@@ -7,6 +7,9 @@ const {
   registerLead,
   generateRegistrationLink,
   ingestWebhookLead,
+  leadSourceOptions,
+  bulkCreateLeads,
+  deleteInvalidLeads,
 } = require("../controllers/leadController");
 const { protect, authorize } = require("../middleware/auth");
 
@@ -20,7 +23,10 @@ router.post("/webhook/:apiKey", ingestWebhookLead);
 router.use(protect, authorize("admin"));
 
 router.get("/", listLeads);
+router.get("/sources", leadSourceOptions);
 router.post("/", createLead);
+router.post("/bulk", bulkCreateLeads);
+router.post("/invalid/delete", deleteInvalidLeads);
 router.get("/:id", getLead);
 router.patch("/:id/assign", reassignLead);
 router.post("/:id/register", registerLead);

@@ -99,8 +99,35 @@ const logoUpload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 
+// Course registration — ID proofs (photo or PDF), selfie and signature images.
+// Kept private: never served statically, only through an admin-only route.
+const REGISTRATION_UPLOAD_DIR = path.join(__dirname, "..", "uploads", "registrations");
+fs.mkdirSync(REGISTRATION_UPLOAD_DIR, { recursive: true });
+
+const registrationStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, REGISTRATION_UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const unique = `${Date.now()}-${crypto.randomBytes(8).toString("hex")}`;
+    cb(null, `${unique}${path.extname(file.originalname).toLowerCase().slice(0, 8)}`);
+  },
+});
+
+const registrationFileFilter = (req, file, cb) => {
+  const ok = IMAGE_MIMES.has(file.mimetype) || (file.fieldname.startsWith("idProof") && file.mimetype === "application/pdf");
+  if (ok) return cb(null, true);
+  cb(new Error("Unsupported file type — upload a photo (JPG/PNG) or PDF"));
+};
+
+const registrationUpload = multer({
+  storage: registrationStorage,
+  fileFilter: registrationFileFilter,
+  limits: { fileSize: 5 * 1024 * 1024, files: 5 },
+});
+
 module.exports = {
   upload,
+  registrationUpload,
+  REGISTRATION_UPLOAD_DIR,
   resolveType,
   UPLOAD_DIR,
   assignmentUpload,

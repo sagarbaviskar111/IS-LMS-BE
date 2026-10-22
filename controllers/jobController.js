@@ -1,10 +1,47 @@
 const Job = require("../models/Job");
 const JobInterest = require("../models/JobInterest");
+const JobEmailLead = require("../models/JobEmailLead");
 const Batch = require("../models/Batch");
 const paginate = require("../utils/paginate");
+const { parseJobText } = require("../utils/aiJobParser");
+
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// A lot of real job posts just say "mail your resume to hr@company.com"
+// rather than linking anywhere — rather than force that into a broken URL,
+// accept a bare email as the apply link and turn it into a working mailto:
+// link for students.
+const normalizeApplyLink = (raw) => {
+  const trimmed = raw.trim();
+  const bareEmail = trimmed.replace(/^mailto:/i, "");
+  if (EMAIL_RE.test(bareEmail)) {
+    return { link: `mailto:${bareEmail.toLowerCase()}`, email: bareEmail.toLowerCase() };
+  }
+  return { link: trimmed, email: null };
+};
+
+// Keeps the superadmin-visible email-lead record in sync with the job's
+// current state — created/updated when the apply link is (still) an email,
+// removed if the admin later changes it to a real URL or switches modes.
+const syncJobEmailLead = async (job, adminUser) => {
+  const email = job.applicationMode === "link" && job.applyLink?.startsWith("mailto:")
+    ? job.applyLink.slice("mailto:".length)
+    : null;
+
+  if (email) {
+    await JobEmailLead.findOneAndUpdate(
+      { job: job._id },
+      { job: job._id, admin: adminUser._id, instituteName: adminUser.name, company: job.company, email },
+      { upsert: true, setDefaultsOnInsert: true }
+    );
+  } else {
+    await JobEmailLead.deleteOne({ job: job._id });
+  }
+};
 
 const validateJobFields = async (adminId, body) => {
-  const { title, company, description, salary, location, visibility, batchId, applicationMode, applyLink } = body;
+  const { title, company, description, skills, responsibilities, location, visibility, batchId, applicationMode, applyLink } =
+    body;
 
   if (!title || !company || !description) {
     throw { status: 400, message: "title, company and description are required" };
@@ -33,19 +70,36 @@ const validateJobFields = async (adminId, body) => {
     title: title.trim(),
     company: company.trim(),
     description: description.trim(),
-    salary: (salary || "").trim(),
+    skills: (skills || "").trim(),
+    responsibilities: (responsibilities || "").trim(),
     location: (location || "").trim(),
     visibility,
     batch: batch ? batch._id : null,
     applicationMode,
-    applyLink: applicationMode === "link" ? applyLink.trim() : null,
+    applyLink: applicationMode === "link" ? normalizeApplyLink(applyLink).link : null,
   };
+};
+
+exports.parseJobPosting = async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text || !text.trim()) {
+      return res.status(400).json({ message: "Paste some job text first" });
+    }
+
+    const fields = await parseJobText(text.trim());
+    res.json({ fields });
+  } catch (err) {
+    console.error("[job-parse] failed:", err.message);
+    res.status(502).json({ message: "Could not read that job post — try filling the fields in yourself." });
+  }
 };
 
 exports.createJob = async (req, res) => {
   try {
     const fields = await validateJobFields(req.user._id, req.body);
     const job = await Job.create({ admin: req.user._id, ...fields });
+    await syncJobEmailLead(job, req.user);
     res.status(201).json({ job });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ message: err.message });
@@ -98,6 +152,7 @@ exports.updateJob = async (req, res) => {
     const fields = await validateJobFields(req.user._id, req.body);
     Object.assign(job, fields);
     await job.save();
+    await syncJobEmailLead(job, req.user);
     res.json({ job });
   } catch (err) {
     if (err.status) return res.status(err.status).json({ message: err.message });
@@ -110,6 +165,9 @@ exports.deleteJob = async (req, res) => {
     const job = await Job.findOne({ _id: req.params.id, admin: req.user._id });
     if (!job) return res.status(404).json({ message: "Job not found" });
 
+    // JobEmailLead is deliberately kept — it's the superadmin's permanent
+    // record of which companies/institutes made contact, and should survive
+    // the admin deleting the job posting itself.
     await Promise.all([job.deleteOne(), JobInterest.deleteMany({ job: job._id })]);
     res.json({ message: "Job deleted" });
   } catch (err) {
@@ -150,6 +208,28 @@ exports.listJobsForStudent = async (req, res) => {
 
     res.json({
       jobs: jobs.map((j) => ({ ...j.toObject(), interested: interestedJobIds.has(String(j._id)) })),
+      total,
+      page,
+      limit,
+      totalPages: Math.max(1, Math.ceil(total / limit)),
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Superadmin-facing: every job posting where an admin pasted an HR email
+// instead of a real apply link, across every institute on the platform.
+exports.listJobEmailLeads = async (req, res) => {
+  try {
+    const { page, limit, skip } = paginate(req);
+    const [leads, total] = await Promise.all([
+      JobEmailLead.find().sort({ createdAt: -1 }).skip(skip).limit(limit),
+      JobEmailLead.countDocuments(),
+    ]);
+
+    res.json({
+      leads,
       total,
       page,
       limit,

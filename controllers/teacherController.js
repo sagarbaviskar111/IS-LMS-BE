@@ -1,11 +1,22 @@
 const Batch = require("../models/Batch");
 const User = require("../models/User");
+const paginate = require("../utils/paginate");
 
 exports.youtubeStatus = async (req, res) => {
   try {
-    const admin = await User.findById(req.user.admin).select("youtube.connected youtube.channelTitle");
+    const admin = await User.findById(req.user.admin).select(
+      "youtube.connected youtube.channelTitle videoFlow videoStorage.verified"
+    );
+    const flow = (admin && admin.videoFlow) || "youtube";
+    // `connected` means "this institute is ready to accept a recording" for
+    // whichever flow it's on, so the upload UI doesn't need to know which.
+    const connected =
+      flow === "storage"
+        ? !!(admin && admin.videoStorage && admin.videoStorage.verified)
+        : !!(admin && admin.youtube && admin.youtube.connected);
     res.json({
-      connected: !!(admin && admin.youtube && admin.youtube.connected),
+      connected,
+      flow,
       channelTitle: admin && admin.youtube ? admin.youtube.channelTitle : null,
     });
   } catch (err) {
@@ -30,13 +41,15 @@ exports.listBatchStudents = async (req, res) => {
       return res.status(403).json({ message: "You are not assigned to this batch" });
     }
 
-    const students = await User.find({
-      role: "student",
-      admin: req.user.admin,
-      batch: batchId,
-    }).sort({ name: 1 });
+    const { page, limit, skip } = paginate(req);
+    const filter = { role: "student", admin: req.user.admin, batch: batchId };
 
-    res.json({ students });
+    const [students, total] = await Promise.all([
+      User.find(filter).sort({ name: 1 }).skip(skip).limit(limit),
+      User.countDocuments(filter),
+    ]);
+
+    res.json({ students, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }

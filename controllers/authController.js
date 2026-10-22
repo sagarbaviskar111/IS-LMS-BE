@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const fs = require("fs");
 const User = require("../models/User");
 const Lead = require("../models/Lead");
 const Payment = require("../models/Payment");
@@ -8,6 +9,7 @@ const { getRazorpay } = require("../utils/razorpay");
 const { DAY_MS } = require("../utils/paymentCycle");
 const { resolveInstitute } = require("../utils/institute");
 const { sendPasswordResetEmail } = require("../utils/email");
+const { uploadFile, deleteFile, resolveResourceType } = require("../utils/cloudinary");
 
 const ROLE_LABELS = { student: "Students", teacher: "Teachers", telecaller: "Telecallers" };
 
@@ -349,6 +351,58 @@ exports.me = async (req, res) => {
   res.json({ user: req.user.toJSON(), institute });
 };
 
+// Every role edits their own name/phone/photo here — nothing else. Email,
+// password and every institute/role-specific field has its own dedicated
+// flow and is deliberately out of scope for this endpoint.
+exports.updateMe = async (req, res) => {
+  try {
+    const user = req.user;
+    const { name, phone, removeAvatar } = req.body;
+
+    if (name !== undefined) {
+      const trimmed = String(name).trim();
+      if (!trimmed) {
+        if (req.file) fs.unlink(req.file.path, () => {});
+        return res.status(400).json({ message: "Name cannot be empty" });
+      }
+      user.name = trimmed;
+    }
+
+    if (phone !== undefined) {
+      user.phone = String(phone).trim();
+    }
+
+    if (req.file) {
+      let result;
+      try {
+        const resourceType = resolveResourceType(req.file.mimetype);
+        result = await uploadFile(req.file.path, { folder: `avatars/${user._id}`, resourceType });
+      } catch (err) {
+        fs.unlink(req.file.path, () => {});
+        return res.status(502).json({ message: "Photo upload failed — please try again" });
+      }
+      fs.unlink(req.file.path, () => {});
+
+      const oldPublicId = user.avatar?.cloudinaryPublicId;
+      const oldResourceType = user.avatar?.cloudinaryResourceType;
+      user.avatar = { cloudinaryPublicId: result.public_id, cloudinaryResourceType: result.resource_type };
+      if (oldPublicId) await deleteFile(oldPublicId, oldResourceType);
+    } else if (removeAvatar === "true" || removeAvatar === true) {
+      const oldPublicId = user.avatar?.cloudinaryPublicId;
+      const oldResourceType = user.avatar?.cloudinaryResourceType;
+      user.avatar = { cloudinaryPublicId: null, cloudinaryResourceType: null };
+      if (oldPublicId) await deleteFile(oldPublicId, oldResourceType);
+    }
+
+    await user.save();
+    const institute = await resolveInstitute(user);
+    res.json({ user: user.toJSON(), institute });
+  } catch (err) {
+    if (req.file) fs.unlink(req.file.path, () => {});
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
 exports.forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
@@ -400,6 +454,7 @@ exports.forgotPassword = async (req, res) => {
         recipient: admin._id,
         sender: user._id,
         senderRole: user.role,
+        sendBatchId: crypto.randomUUID(),
         title: "Password reset requested",
         message: `${user.name} (${user.email}) asked to reset their password. Set a new one for them from ${
           ROLE_LABELS[user.role] || "your team"
