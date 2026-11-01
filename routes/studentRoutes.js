@@ -6,6 +6,7 @@ const {
   classmates,
   listMaterials,
   myPayments,
+  payNextInstallment,
 } = require("../controllers/studentController");
 const { listExams, getExam, submitExam, getResult } = require("../controllers/studentExamController");
 const { listAssignments, submitAssignment } = require("../controllers/studentAssignmentController");
@@ -16,7 +17,14 @@ const { protect, authorize } = require("../middleware/auth");
 
 const router = express.Router();
 
+const { studentReceipt, myRegistration, myRegistrationFile } = require("../controllers/receiptController");
+
+const { myCertificates, myCertificatePdf } = require("../controllers/certificateController");
+
 router.use(protect, authorize("student"));
+
+router.get("/certificates", myCertificates);
+router.get("/certificates/:id/pdf", myCertificatePdf);
 
 router.get("/tools", listMyInstituteTools);
 router.get("/jobs", listJobsForStudent);
@@ -27,6 +35,10 @@ router.get("/attendance", myAttendance);
 router.get("/classmates", classmates);
 router.get("/materials", listMaterials);
 router.get("/payments", myPayments);
+router.post("/payments/next-installment", payNextInstallment);
+router.get("/payments/:id/receipt", studentReceipt);
+router.get("/registration", myRegistration);
+router.get("/registration/file/:kind", myRegistrationFile);
 
 router.get("/exams", listExams);
 router.get("/exams/:id", getExam);

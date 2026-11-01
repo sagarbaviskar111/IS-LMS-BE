@@ -9,6 +9,7 @@ const { getFileUrl, uploadFile } = require("../utils/cloudinary");
 const { normalizeEmail, normalizeName, normalizePhone } = require("../utils/validators");
 const { REGISTRATION_UPLOAD_DIR } = require("../utils/upload");
 const { DAY_MS, round2, buildSchedule, paymentTerms } = require("../utils/coursePayment");
+const { buildStudentSchedule, rebaseSchedule, syncFromSchedule, hasSchedule } = require("../utils/installmentSchedule");
 const DEFAULT_TERMS = require("../utils/defaultCourseTerms");
 
 const removeFiles = (files) => {
@@ -183,11 +184,18 @@ exports.submitRegistration = async (req, res) => {
       student.deactivatedForPayment = false;
       if (alreadyPaid) {
         // Fees were collected earlier; restart the next-installment clock from joining.
-        if (enrollment.nextDays > 0) student.nextDueDate = new Date(Date.now() + enrollment.nextDays * DAY_MS);
+        if (hasSchedule(student)) {
+          rebaseSchedule(student);
+          syncFromSchedule(student);
+        } else if (enrollment.nextDays > 0) {
+          student.nextDueDate = new Date(Date.now() + enrollment.nextDays * DAY_MS);
+        }
       } else {
         student.installmentAmount = terms.installmentAmount;
         student.balanceDue = terms.balanceDue;
         student.nextDueDate = terms.nextDueDate;
+        student.installmentSchedule = buildStudentSchedule(schedule, amountPaid);
+        syncFromSchedule(student);
       }
       await student.save();
     } else {
@@ -205,6 +213,9 @@ exports.submitRegistration = async (req, res) => {
         balanceDue: terms.balanceDue,
         nextDueDate: terms.nextDueDate,
       });
+      student.installmentSchedule = buildStudentSchedule(schedule, amountPaid);
+      syncFromSchedule(student);
+      await student.save();
     }
 
     if (files.profilePhoto?.length) {

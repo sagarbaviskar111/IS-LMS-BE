@@ -1,3 +1,5 @@
+const { sanitizeRichText } = require("../utils/richText");
+const { notifyUsers } = require("../utils/notify");
 const fs = require("fs");
 const Assignment = require("../models/Assignment");
 const AssignmentSubmission = require("../models/AssignmentSubmission");
@@ -171,6 +173,122 @@ exports.deleteAssignment = async (req, res) => {
     );
 
     res.json({ message: "Assignment deleted" });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+const DECISION_LABEL = { approved: "approved", resubmit: "sent back for resubmission", rejected: "not accepted" };
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Teacher reviews one submission: points, a written review and a verdict.
+//  decision "approved"  - accepted, no more changes
+//  decision "resubmit"  - student must submit again, until resubmitUntil (default 3 days)
+//  decision "rejected"  - not accepted and no further attempts
+//  decision ""          - clears the verdict
+// Every field is optional; points: null clears the grade. The student is notified
+// whenever the verdict changes.
+exports.reviewSubmission = async (req, res) => {
+  try {
+    const { assignment, error } = await loadOwnedAssignment(req);
+    if (error) return res.status(error[0]).json({ message: error[1] });
+
+    const submission = await AssignmentSubmission.findOne({ _id: req.params.submissionId, assignment: assignment._id }).catch(
+      () => null
+    );
+    if (!submission) return res.status(404).json({ message: "Submission not found" });
+
+    const { points, review, decision, resubmitUntil } = req.body;
+    if (points !== undefined) {
+      if (points === null) {
+        submission.points = null;
+      } else if (typeof points !== "number" || !Number.isFinite(points) || points < 0 || points > 100000) {
+        return res.status(400).json({ message: "Points must be a number of 0 or more" });
+      } else {
+        submission.points = Math.round(points * 100) / 100;
+      }
+    }
+    if (review !== undefined) submission.review = sanitizeRichText(review);
+
+    const previousDecision = submission.decision;
+    if (decision !== undefined) {
+      if (!["", "approved", "resubmit", "rejected"].includes(decision)) {
+        return res.status(400).json({ message: "Invalid decision" });
+      }
+      if (decision === "resubmit") {
+        const until = resubmitUntil ? new Date(resubmitUntil) : new Date(Date.now() + 3 * DAY_MS);
+        if (Number.isNaN(until.getTime()) || until.getTime() <= Date.now()) {
+          return res.status(400).json({ message: "Pick a resubmission deadline in the future" });
+        }
+        submission.resubmitUntil = until;
+      } else {
+        submission.resubmitUntil = null;
+      }
+      submission.decision = decision;
+    }
+
+    submission.reviewedAt = new Date();
+    submission.reviewedBy = req.user._id;
+    await submission.save();
+
+    if (decision && decision !== previousDecision) {
+      const extra =
+        decision === "resubmit" ? ` Please submit again by ${submission.resubmitUntil.toLocaleString("en-IN")}.` : "";
+      await notifyUsers(
+        req.user,
+        [submission.student],
+        `Assignment ${DECISION_LABEL[decision]}`,
+        `Your submission for "${assignment.title}" was ${DECISION_LABEL[decision]} by your teacher.${extra}`
+      );
+    } else if (review !== undefined && submission.review && !decision) {
+      await notifyUsers(req.user, [submission.student], "New review on your assignment", `Your teacher reviewed "${assignment.title}".`);
+    }
+
+    res.json({ submission: withFileUrl(await submission.populate("student", "name email")) });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Teacher cancels an assignment (students can no longer submit) or restores it.
+exports.cancelAssignment = async (req, res) => {
+  try {
+    const { assignment, error } = await loadOwnedAssignment(req);
+    if (error) return res.status(error[0]).json({ message: error[1] });
+    if (assignment.status === "cancelled") return res.status(400).json({ message: "Already cancelled" });
+
+    assignment.status = "cancelled";
+    assignment.cancelReason = String((req.body && req.body.reason) || "").trim().slice(0, 300);
+    assignment.cancelledAt = new Date();
+    await assignment.save();
+
+    const students = await User.find({ role: "student", batch: assignment.batch, isActive: true }).select("_id");
+    await notifyUsers(
+      req.user,
+      students.map((u) => u._id),
+      "Assignment cancelled",
+      `"${assignment.title}" was cancelled by your teacher.${assignment.cancelReason ? ` Reason: ${assignment.cancelReason}` : ""}`
+    );
+    res.json({ assignment: serializeAssignment(assignment) });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.restoreAssignment = async (req, res) => {
+  try {
+    const { assignment, error } = await loadOwnedAssignment(req);
+    if (error) return res.status(error[0]).json({ message: error[1] });
+    if (assignment.status !== "cancelled") return res.status(400).json({ message: "Assignment isn't cancelled" });
+
+    assignment.status = "active";
+    assignment.cancelReason = "";
+    assignment.cancelledAt = null;
+    await assignment.save();
+
+    const students = await User.find({ role: "student", batch: assignment.batch, isActive: true }).select("_id");
+    await notifyUsers(req.user, students.map((u) => u._id), "Assignment restored", `"${assignment.title}" is active again.`);
+    res.json({ assignment: serializeAssignment(assignment) });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }

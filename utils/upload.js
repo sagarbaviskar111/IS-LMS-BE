@@ -124,7 +124,29 @@ const registrationUpload = multer({
   limits: { fileSize: 5 * 1024 * 1024, files: 5 },
 });
 
+// Certificate template backgrounds - PNG/JPG only (the PDF is drawn on top).
+const CERT_UPLOAD_DIR = path.join(__dirname, "..", "uploads", "certificates");
+fs.mkdirSync(CERT_UPLOAD_DIR, { recursive: true });
+
+const certificateStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, CERT_UPLOAD_DIR),
+  filename: (req, file, cb) => {
+    const unique = `${Date.now()}-${crypto.randomBytes(6).toString("hex")}`;
+    cb(null, `${unique}${path.extname(file.originalname).toLowerCase().slice(0, 8)}`);
+  },
+});
+
+const certificateUpload = multer({
+  storage: certificateStorage,
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === "image/png" || file.mimetype === "image/jpeg") return cb(null, true);
+    cb(new Error("Upload the certificate as a PNG or JPG image"));
+  },
+  limits: { fileSize: 15 * 1024 * 1024 },
+});
+
 module.exports = {
+  certificateUpload,
   upload,
   registrationUpload,
   REGISTRATION_UPLOAD_DIR,

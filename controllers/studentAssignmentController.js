@@ -5,6 +5,21 @@ const { uploadFile, deleteFile, resolveResourceType } = require("../utils/cloudi
 const { withFileUrl, withAttachmentUrl } = require("../utils/fileUrlView");
 const paginate = require("../utils/paginate");
 
+// Whether the student may upload (or re-upload) right now, and why not.
+//  - cancelled assignments are closed
+//  - an approved or rejected submission is final
+//  - after the due date only a teacher's "resubmit" request (until its deadline) reopens it
+const submitGate = (assignment, submission, now = Date.now()) => {
+  if (assignment.status === "cancelled") return { canSubmit: false, reason: "This assignment was cancelled by your teacher" };
+  if (submission && submission.decision === "approved") return { canSubmit: false, reason: "Your submission was approved - no changes needed" };
+  if (submission && submission.decision === "rejected") return { canSubmit: false, reason: "Your submission was not accepted and can't be resubmitted" };
+  const overdue = new Date(assignment.dueDate).getTime() < now;
+  if (!overdue) return { canSubmit: true };
+  const reopened =
+    submission && submission.decision === "resubmit" && submission.resubmitUntil && new Date(submission.resubmitUntil).getTime() > now;
+  return reopened ? { canSubmit: true } : { canSubmit: false, reason: "The due date for this assignment has passed" };
+};
+
 exports.listAssignments = async (req, res) => {
   try {
     const { page, limit, skip } = paginate(req);
@@ -43,8 +58,17 @@ exports.listAssignments = async (req, res) => {
                 fileSize: submission.fileSize,
                 mimeType: submission.mimeType,
                 submittedAt: submission.submittedAt,
+                points: submission.points,
+                review: submission.review || "",
+                reviewedAt: submission.reviewedAt,
+                decision: submission.decision || "",
+                resubmitUntil: submission.resubmitUntil,
+                history: submission.history || [],
               }
             : null,
+          status: a.status || "active",
+          cancelReason: a.cancelReason || "",
+          canSubmit: submitGate(a, submission, now).canSubmit,
           // Locked once the due date has passed and nothing was ever turned in.
           locked: overdue && !submission,
           overdue,
@@ -75,12 +99,12 @@ exports.submitAssignment = async (req, res) => {
       fs.unlink(req.file.path, () => {});
       return res.status(403).json({ message: "Not authorized" });
     }
-    if (new Date(assignment.dueDate).getTime() < Date.now()) {
-      fs.unlink(req.file.path, () => {});
-      return res.status(400).json({ message: "The due date for this assignment has passed" });
-    }
-
     const existing = await AssignmentSubmission.findOne({ assignment: assignment._id, student: req.user._id });
+    const gate = submitGate(assignment, existing);
+    if (!gate.canSubmit) {
+      fs.unlink(req.file.path, () => {});
+      return res.status(400).json({ message: gate.reason });
+    }
 
     let result;
     try {
@@ -112,7 +136,24 @@ exports.submitAssignment = async (req, res) => {
       // Resubmission before the due date replaces the previous file.
       const oldPublicId = existing.cloudinaryPublicId;
       const oldResourceType = existing.cloudinaryResourceType;
-      Object.assign(existing, payload);
+      // Keep the earlier attempt (file, verdict, points, review) in history, then
+      // start the new one as unreviewed.
+      existing.history.push({
+        fileName: existing.fileName,
+        submittedAt: existing.submittedAt,
+        decision: existing.decision,
+        points: existing.points,
+        review: existing.review,
+        reviewedAt: existing.reviewedAt,
+      });
+      Object.assign(existing, payload, {
+        points: null,
+        review: "",
+        reviewedAt: null,
+        reviewedBy: null,
+        decision: "",
+        resubmitUntil: null,
+      });
       submission = await existing.save();
       await deleteFile(oldPublicId, oldResourceType);
     } else {

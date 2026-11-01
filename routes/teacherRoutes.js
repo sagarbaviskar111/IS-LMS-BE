@@ -26,6 +26,7 @@ const {
   closeExam,
   announceResults,
   listSubmissions,
+  reviewSubmission: reviewExamSubmission,
 } = require("../controllers/examController");
 const {
   createAssignment,
@@ -34,6 +35,9 @@ const {
   updateAssignment,
   deleteAssignment,
   listSubmissions: listAssignmentSubmissions,
+  reviewSubmission: reviewAssignmentSubmission,
+  cancelAssignment,
+  restoreAssignment,
 } = require("../controllers/assignmentController");
 const { upload, assignmentUpload } = require("../utils/upload");
 const { listMyInstituteTools } = require("../controllers/toolController");
@@ -77,6 +81,7 @@ router.patch("/exams/:id/publish", publishExam);
 router.patch("/exams/:id/close", closeExam);
 router.patch("/exams/:id/announce", announceResults);
 router.get("/exams/:id/submissions", listSubmissions);
+router.patch("/exams/:id/submissions/:submissionId/review", reviewExamSubmission);
 
 router.get("/assignments", listAssignments);
 router.post("/assignments", assignmentUpload.single("file"), createAssignment);
@@ -84,5 +89,8 @@ router.get("/assignments/:id", getAssignment);
 router.patch("/assignments/:id", updateAssignment);
 router.delete("/assignments/:id", deleteAssignment);
 router.get("/assignments/:id/submissions", listAssignmentSubmissions);
+router.patch("/assignments/:id/submissions/:submissionId/review", reviewAssignmentSubmission);
+router.post("/assignments/:id/cancel", cancelAssignment);
+router.post("/assignments/:id/restore", restoreAssignment);
 
 module.exports = router;

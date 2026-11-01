@@ -10,6 +10,16 @@ const assignmentSchema = new mongoose.Schema(
     // The hard cutoff — students can no longer submit once this passes.
     // Editable by the teacher after creation.
     dueDate: { type: Date, required: true },
+    // A teacher can cancel an assignment: students can no longer submit and see
+    // it marked cancelled (with the reason). Reversible.
+    status: { type: String, enum: ["active", "cancelled"], default: "active" },
+    cancelReason: { type: String, trim: true, default: "" },
+    cancelledAt: { type: Date, default: null },
+    // A teacher can cancel an assignment: students can no longer submit and see
+    // it marked cancelled (with the reason). Reversible.
+    status: { type: String, enum: ["active", "cancelled"], default: "active" },
+    cancelReason: { type: String, trim: true, default: "" },
+    cancelledAt: { type: Date, default: null },
     // Optional reference file the teacher attaches (e.g. the question sheet).
     // fileUrl is never persisted — see utils/fileUrlView.js.
     attachment: {

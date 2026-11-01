@@ -5,6 +5,7 @@ const StudentEnrollment = require("../models/StudentEnrollment");
 const User = require("../models/User");
 const { normalizeEmail, normalizeName, normalizePhone } = require("../utils/validators");
 const { round2, buildSchedule, paymentTerms } = require("../utils/coursePayment");
+const { buildStudentSchedule, syncFromSchedule } = require("../utils/installmentSchedule");
 
 const PAID = ["unpaid", "first_installment", "full"];
 const METHODS = { cash: "Cash", upi: "UPI", other: "Other" };
@@ -62,6 +63,7 @@ exports.registerStudent = async (req, res) => {
     let planTotal = 0;
     let amountPaid = 0;
     let terms = null;
+    let feePlan = null;
     if (paidStatus !== "unpaid") {
       plan = paidStatus === "first_installment" ? "installment" : course.oneTimeEnabled ? "one_time" : "installment";
       const schedule = buildSchedule(course, plan);
@@ -79,6 +81,7 @@ exports.registerStudent = async (req, res) => {
       if (!Number.isFinite(amountPaid) || amountPaid <= 0) return res.status(400).json({ message: "Enter the amount received" });
       if (amountPaid > planTotal) return res.status(400).json({ message: `Amount can't be more than the total fee (₹${planTotal})` });
       terms = paymentTerms(schedule, amountPaid);
+      feePlan = schedule;
     }
 
     const student = await User.create({
@@ -97,6 +100,14 @@ exports.registerStudent = async (req, res) => {
         ? { installmentAmount: terms.installmentAmount, balanceDue: terms.balanceDue, nextDueDate: terms.nextDueDate }
         : {}),
     });
+
+    if (feePlan) {
+      // Fix every installment's due date now; the dates restart from the day the
+      // student finishes registering (see submitRegistration).
+      student.installmentSchedule = buildStudentSchedule(feePlan, amountPaid);
+      syncFromSchedule(student);
+      await student.save();
+    }
 
     if (paidStatus !== "unpaid") {
       await Payment.create({

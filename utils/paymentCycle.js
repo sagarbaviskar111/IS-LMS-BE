@@ -1,3 +1,6 @@
+const { closeOutIfFullyPaid } = require("./feeStatus");
+const { hasSchedule, syncFromSchedule } = require("./installmentSchedule");
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Sets a student's initial payment terms when they're first given an
@@ -18,38 +21,99 @@ const ensurePaymentTermsFromBatch = (student, batch) => {
   initPaymentTerms(student, { installmentAmount: batch.defaultFee, cycleDays: batch.paymentCycleDays });
 };
 
+// Extra days after the due date before an unpaid account is deactivated.
+const FEE_GRACE_DAYS = 3;
+const REMINDER_GAP_MS = 20 * 60 * 60 * 1000;
+
+// When an unpaid account gets deactivated: the end of the 3 extra days after
+// the due date, or the admin-granted extension if that is later.
+const paymentDeadline = (student) => {
+  if (!student.nextDueDate) return null;
+  const base = new Date(student.nextDueDate.getTime() + FEE_GRACE_DAYS * DAY_MS);
+  return student.paymentGraceUntil && student.paymentGraceUntil > base ? student.paymentGraceUntil : base;
+};
+
+const reminderText = (student, deadline, now) => {
+  const amount = student.balanceDue;
+  const due = student.nextDueDate.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+  if (student.nextDueDate > now) {
+    return `Hi ${student.name}, your fee of ₹${amount} is due on ${due}. Please pay on time to keep your account active.`;
+  }
+  const last = deadline.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
+  return `Hi ${student.name}, your fee of ₹${amount} was due on ${due}. Please pay by ${last} — after that your account will be deactivated until the dues are cleared.`;
+};
+
+// Deactivates the student right now if their unpaid-fee deadline (due date +
+// extra days, or the admin extension) has passed, instead of waiting for the
+// periodic job. Returns true if the account was just deactivated.
+const enforceFeeDeadline = async (student) => {
+  if (student.role !== "student" || !student.isActive || !(student.balanceDue > 0)) return false;
+  const deadline = paymentDeadline(student);
+  if (!deadline || deadline > new Date()) return false;
+  student.isActive = false;
+  student.deactivatedForPayment = true;
+  student.paymentGraceUntil = null;
+  await student.save();
+  return true;
+};
+
 // Runs periodically over every active student with a payment cycle in
 // progress. For each one:
-//  - if the due date (or an admin-granted grace date) has passed and they
-//    still owe money, deactivate the account for non-payment.
-//  - if the due date has passed but the balance is already clear, roll over
-//    to the next cycle (charge the next installment, push the due date out).
-const runPaymentCycleCheck = async (User) => {
+//  - the due date has passed, they still owe money, and the extra grace days
+//    (or an admin extension) are over: deactivate the account for non-payment.
+//  - they owe money and the due date is within a day or already passed (but
+//    still inside the grace period): send one WhatsApp reminder a day.
+//  - the due date has passed but the balance is already clear: roll over to
+//    the next cycle (charge the next installment, push the due date out).
+const runPaymentCycleCheck = async (User, sendMessage) => {
   const now = new Date();
   const students = await User.find({
     role: "student",
     isActive: true,
-    nextDueDate: { $ne: null, $lte: now },
+    nextDueDate: { $ne: null, $lte: new Date(now.getTime() + DAY_MS) },
   }).populate("batch", "paymentCycleDays");
 
   let deactivated = 0;
   let rolledOver = 0;
+  let reminded = 0;
 
   for (const student of students) {
-    const deadline = student.paymentGraceUntil && student.paymentGraceUntil > student.nextDueDate
-      ? student.paymentGraceUntil
-      : student.nextDueDate;
-
-    if (deadline > now) continue; // grace period pushed the real deadline into the future
+    // Course students: re-derive what's owed from their installment schedule
+    // (a later installment may have just fallen due) before deciding anything.
+    if (hasSchedule(student)) {
+      syncFromSchedule(student, now);
+      if (student.isModified()) await student.save();
+    }
+    const deadline = paymentDeadline(student);
 
     if (student.balanceDue > 0) {
-      student.isActive = false;
-      student.deactivatedForPayment = true;
-      student.paymentGraceUntil = null;
-      await student.save();
-      deactivated += 1;
+      if (deadline <= now) {
+        student.isActive = false;
+        student.deactivatedForPayment = true;
+        student.paymentGraceUntil = null;
+        await student.save();
+        deactivated += 1;
+        continue;
+      }
+      const lastSent = student.lastFeeReminderAt;
+      if (sendMessage && (!lastSent || now - lastSent >= REMINDER_GAP_MS)) {
+        const result = await sendMessage(student.phone, reminderText(student, deadline, now)).catch((err) => ({
+          sent: false,
+          reason: err.message,
+        }));
+        if (result.sent) reminded += 1;
+        else if (result.reason !== "no phone number") console.log(`[fee-reminder] ${student.email}: ${result.reason}`);
+        // Stamp even on failure/dry-run so a bad number isn't retried every 15 minutes.
+        student.lastFeeReminderAt = now;
+        await student.save();
+      }
       continue;
     }
+
+    if (hasSchedule(student) || student.nextDueDate > now) continue;
+
+    // Course fee already paid in full: end the cycle instead of charging again.
+    if (await closeOutIfFullyPaid(student)) continue;
 
     const cycleDays = student.batch?.paymentCycleDays || 30;
     student.balanceDue += student.installmentAmount || 0;
@@ -59,7 +123,7 @@ const runPaymentCycleCheck = async (User) => {
     rolledOver += 1;
   }
 
-  return { deactivated, rolledOver, checked: students.length };
+  return { deactivated, rolledOver, reminded, checked: students.length };
 };
 
-module.exports = { initPaymentTerms, ensurePaymentTermsFromBatch, runPaymentCycleCheck, DAY_MS };
+module.exports = { initPaymentTerms, ensurePaymentTermsFromBatch, runPaymentCycleCheck, enforceFeeDeadline, paymentDeadline, FEE_GRACE_DAYS, DAY_MS };

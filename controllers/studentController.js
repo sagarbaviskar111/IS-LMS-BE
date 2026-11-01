@@ -1,3 +1,6 @@
+const { paymentDeadline, DAY_MS } = require("../utils/paymentCycle");
+const { getFeeStatus, closeOutIfFullyPaid } = require("../utils/feeStatus");
+const { syncFromSchedule, publicSchedule, hasSchedule } = require("../utils/installmentSchedule");
 const Batch = require("../models/Batch");
 const Material = require("../models/Material");
 const Session = require("../models/Session");
@@ -107,8 +110,58 @@ exports.classmates = async (req, res) => {
   }
 };
 
+// Days the next due date moves out when an installment is paid early.
+const cycleDaysOf = async (student) => {
+  const batch = student.batch ? await Batch.findById(student.batch).select("paymentCycleDays") : null;
+  return batch?.paymentCycleDays || 30;
+};
+
+// Pays the next installment ahead of time: records the payment and pushes the
+// due date out by one cycle. Only allowed once the current balance is clear.
+exports.payNextInstallment = async (req, res) => {
+  try {
+    const student = req.user;
+    if (hasSchedule(student)) {
+      return res.status(400).json({ message: "Your installments follow a fixed schedule — pay the current one above" });
+    }
+    if (!(student.installmentAmount > 0) || !student.nextDueDate) {
+      return res.status(400).json({ message: "You have no upcoming installment" });
+    }
+    if (student.balanceDue > 0) {
+      return res.status(400).json({ message: "Clear your current balance due first" });
+    }
+    // Never take more than what's left of the course fee.
+    const feeStatus = await getFeeStatus(student);
+    if (feeStatus && feeStatus.remaining <= 0) {
+      return res.status(400).json({ message: "Your course fees are already fully paid" });
+    }
+    const amount = feeStatus ? Math.min(student.installmentAmount, feeStatus.remaining) : student.installmentAmount;
+
+    student.nextDueDate = new Date(student.nextDueDate.getTime() + (await cycleDaysOf(student)) * DAY_MS);
+    student.paymentGraceUntil = null;
+    student.lastFeeReminderAt = null;
+    await student.save();
+
+    await Payment.create({
+      student: student._id,
+      admin: student.admin,
+      batch: student.batch || null,
+      amount,
+      method: "online",
+      status: "paid",
+      note: "Next installment paid in advance",
+    });
+    await closeOutIfFullyPaid(student);
+
+    res.json({ nextDueDate: student.nextDueDate });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
 exports.myPayments = async (req, res) => {
   try {
+    if (syncFromSchedule(req.user)) await req.user.save();
     const { page, limit, skip } = paginate(req);
     const filter = { student: req.user._id };
     const [history, total] = await Promise.all([
@@ -122,6 +175,13 @@ exports.myPayments = async (req, res) => {
         balanceDue: req.user.balanceDue,
         nextDueDate: req.user.nextDueDate,
         paymentGraceUntil: req.user.paymentGraceUntil,
+        feeStatus: await getFeeStatus(req.user),
+        schedule: publicSchedule(req.user),
+        paymentDeadline: paymentDeadline(req.user),
+        nextInstallmentDueDate:
+          !hasSchedule(req.user) && req.user.nextDueDate && req.user.installmentAmount > 0
+            ? new Date(req.user.nextDueDate.getTime() + (await cycleDaysOf(req.user)) * DAY_MS)
+            : null,
       },
       history,
       total,

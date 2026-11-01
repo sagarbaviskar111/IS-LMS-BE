@@ -14,6 +14,13 @@ const submissionSchema = new mongoose.Schema(
     // Snapshotted at submission time — server-graded, never trust a client-sent score.
     score: { type: Number, required: true },
     totalMarks: { type: Number, required: true },
+    // Teacher review. `score` is the figure everything else reads: after a
+    // manual adjustment it is autoScore + adjustment, kept within 0..totalMarks.
+    autoScore: { type: Number, default: null },
+    adjustment: { type: Number, default: 0 },
+    review: { type: String, default: "" },
+    reviewedAt: { type: Date, default: null },
+    reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
   },
   { timestamps: true }
 );

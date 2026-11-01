@@ -6,7 +6,7 @@ const paymentSchema = new mongoose.Schema(
     admin: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     batch: { type: mongoose.Schema.Types.ObjectId, ref: "Batch", default: null },
     amount: { type: Number, required: true, min: 0 },
-    method: { type: String, enum: ["razorpay", "manual"], required: true },
+    method: { type: String, enum: ["razorpay", "manual", "online"], required: true },
     // manual entries are recorded as already paid; razorpay entries are only
     // written to the ledger once payment is verified, so both are effectively "paid".
     status: { type: String, enum: ["paid", "failed"], default: "paid" },

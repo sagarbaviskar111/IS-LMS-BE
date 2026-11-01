@@ -1,3 +1,4 @@
+const { sanitizeRichText } = require("../utils/richText");
 const Exam = require("../models/Exam");
 const Submission = require("../models/Submission");
 const paginate = require("../utils/paginate");
@@ -237,6 +238,36 @@ exports.announceResults = async (req, res) => {
     exam.resultsAnnounced = true;
     await exam.save();
     res.json({ exam });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Teacher reviews one exam submission: adds or removes points (adjustment is
+// the total +/- on top of the auto-graded score) and/or writes a review.
+exports.reviewSubmission = async (req, res) => {
+  try {
+    const { exam, error } = await loadOwnedExam(req);
+    if (error) return res.status(error[0]).json({ message: error[1] });
+
+    const submission = await Submission.findOne({ _id: req.params.submissionId, exam: exam._id }).catch(() => null);
+    if (!submission) return res.status(404).json({ message: "Submission not found" });
+
+    const { adjustment, review } = req.body;
+    if (adjustment !== undefined) {
+      if (typeof adjustment !== "number" || !Number.isFinite(adjustment) || Math.abs(adjustment) > 100000) {
+        return res.status(400).json({ message: "Adjustment must be a number" });
+      }
+      if (submission.autoScore === null || submission.autoScore === undefined) submission.autoScore = submission.score;
+      submission.adjustment = Math.round(adjustment * 100) / 100;
+      submission.score = Math.min(submission.totalMarks, Math.max(0, submission.autoScore + submission.adjustment));
+    }
+    if (review !== undefined) submission.review = sanitizeRichText(review);
+
+    submission.reviewedAt = new Date();
+    submission.reviewedBy = req.user._id;
+    await submission.save();
+    res.json({ submission: await submission.populate("student", "name email") });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }

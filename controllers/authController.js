@@ -5,8 +5,10 @@ const Lead = require("../models/Lead");
 const Payment = require("../models/Payment");
 const Notification = require("../models/Notification");
 const generateToken = require("../utils/generateToken");
+const { closeOutIfFullyPaid } = require("../utils/feeStatus");
+const { hasSchedule, applyPayment } = require("../utils/installmentSchedule");
 const { getRazorpay } = require("../utils/razorpay");
-const { DAY_MS } = require("../utils/paymentCycle");
+const { DAY_MS, enforceFeeDeadline } = require("../utils/paymentCycle");
 const { resolveInstitute } = require("../utils/institute");
 const { sendPasswordResetEmail } = require("../utils/email");
 const { uploadFile, deleteFile, resolveResourceType } = require("../utils/cloudinary");
@@ -63,6 +65,9 @@ exports.login = async (req, res) => {
       return res.status(401).json({ message: "Invalid credentials" });
     }
 
+    // Fees overdue past the extra days: block now, not at the next job run.
+    await enforceFeeDeadline(user);
+
     if (!user.isActive) {
       let message = "Your account has been deactivated. Please check with your teacher or admin.";
       if (user.pending) {
@@ -77,7 +82,10 @@ exports.login = async (req, res) => {
         message =
           "Your account is deactivated due to a pending payment due. Please clear your dues, or in an emergency contact your admin or teacher for more time.";
       }
-      return res.status(403).json({ message, deactivatedForPayment: !!user.deactivatedForPayment });
+      // A student blocked only for unpaid fees can clear them online right
+      // from the login screen (see createDuesPaymentOrder).
+      const canPayOnline = !!user.deactivatedForPayment && user.balanceDue > 0;
+      return res.status(403).json({ message, deactivatedForPayment: !!user.deactivatedForPayment, canPayOnline });
     }
 
     const institute = await resolveInstitute(user);
@@ -92,7 +100,42 @@ exports.login = async (req, res) => {
   }
 };
 
-exports.inviteInfo = async (req, res) => {
+// Development-only shortcut: signs in as the first active user of the given
+// role under DEV_LOGIN_INSTITUTE (default "test-admin") without a password.
+// Hard-disabled unless NODE_ENV is "development".
+exports.devLogin = async (req, res) => {
+  if (process.env.NODE_ENV !== "development") {
+    return res.status(404).json({ message: "Not found" });
+  }
+  try {
+    const { role } = req.body;
+    if (!["admin", "teacher", "student", "telecaller"].includes(role)) {
+      return res.status(400).json({ message: "Invalid role" });
+    }
+
+    const slug = (process.env.DEV_LOGIN_INSTITUTE || "test-admin").toLowerCase();
+    const admin = await User.findOne({ role: "admin", instituteSlug: slug });
+    if (!admin) {
+      return res.status(404).json({ message: `Institute "${slug}" not found` });
+    }
+
+    const user =
+      role === "admin"
+        ? admin
+        : await User.findOne({ role, admin: admin._id, isActive: true }).sort({ createdAt: 1 });
+    if (!user) {
+      return res.status(404).json({ message: `No active ${role} in "${slug}"` });
+    }
+
+    const institute = await resolveInstitute(user);
+    res.cookie("token", generateToken(user, institute?.slug), cookieOptions);
+    res.json({ user: user.toJSON(), institute });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.inviteInfo =async (req, res) => {
   try {
     const inviteCode = (req.query.code || "").toString();
     if (!inviteCode) {
@@ -336,6 +379,61 @@ exports.verifyLeadPayment = async (req, res) => {
       message: "Payment verified. Registration complete — you can now log in.",
       user: student.toJSON(),
     });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// --- Paying overdue fees online ---
+// Used both by a logged-in student (cookie) and by a student whose account was
+// deactivated for unpaid fees (email + password in the body, since they can't
+// hold a session). Always pays the full balance due — no payment gateway.
+const resolveDuesStudent = async (req) => {
+  if (req.user) return req.user;
+  const { email, password } = req.body;
+  if (!email || !password) return null;
+  const user = await User.findOne({ email: String(email).toLowerCase() }).select("+password");
+  if (!user || !(await user.comparePassword(password))) return null;
+  return user;
+};
+
+const duesStudentError = (student) => {
+  if (!student || student.role !== "student") return [401, "Invalid credentials"];
+  if (student.paymentPending) return [400, "Complete your registration payment from your registration link"];
+  if (!student.isActive && !student.deactivatedForPayment) return [403, "Your account is deactivated. Please contact your admin."];
+  if (!(student.balanceDue > 0)) return [400, "You have no dues to pay"];
+  return null;
+};
+
+exports.payDues = async (req, res) => {
+  try {
+    const student = await resolveDuesStudent(req);
+    const bad = duesStudentError(student);
+    if (bad) return res.status(bad[0]).json({ message: bad[1] });
+
+    const paidAmount = student.balanceDue;
+    if (hasSchedule(student)) {
+      // Settles the installments that are due; the next one then becomes current.
+      applyPayment(student, paidAmount);
+    } else {
+      student.balanceDue = 0;
+    }
+    student.isActive = true;
+    student.deactivatedForPayment = false;
+    student.deactivationMessage = null;
+    if (!hasSchedule(student)) student.paymentGraceUntil = null;
+    await student.save();
+
+    await Payment.create({
+      student: student._id,
+      admin: student.admin,
+      amount: paidAmount,
+      method: "online",
+      status: "paid",
+    });
+    await closeOutIfFullyPaid(student);
+
+    res.json({ message: "Payment received. Your account is active." });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }

@@ -53,6 +53,24 @@ const userSchema = new mongoose.Schema(
     // Admin-granted extension — if set and in the future, deactivation waits
     // for this date instead of nextDueDate.
     paymentGraceUntil: { type: Date, default: null },
+    // Course students: the full installment plan fixed at admission, each with its
+    // own due date (see utils/installmentSchedule.js). When present, balanceDue /
+    // nextDueDate / installmentAmount above are derived from it. Empty for
+    // batch-fee students, who just repeat installmentAmount every cycle.
+    installmentSchedule: {
+      type: [
+        {
+          label: { type: String, trim: true, default: "" },
+          amount: { type: Number, required: true, min: 0 },
+          dueAfterDays: { type: Number, default: 0, min: 0 },
+          dueDate: { type: Date, required: true },
+          paid: { type: Number, default: 0, min: 0 },
+        },
+      ],
+      default: [],
+    },
+    // When the last WhatsApp fee reminder went out — keeps the job to one per day.
+    lastFeeReminderAt: { type: Date, default: null },
     // True when isActive was set to false by the payment-cycle job specifically
     // (as opposed to an admin manually deactivating the account), so login can
     // show a payment-specific message and admin UI can offer "reactivate".

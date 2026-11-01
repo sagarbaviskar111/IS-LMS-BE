@@ -19,6 +19,9 @@ const telecallerRoutes = require("./routes/telecallerRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const messageRoutes = require("./routes/messageRoutes");
 const paymentRoutes = require("./routes/paymentRoutes");
+const financeRoutes = require("./routes/financeRoutes");
+const certificateRoutes = require("./routes/certificateRoutes");
+const testimonialRoutes = require("./routes/testimonialRoutes");
 const youtubeRoutes = require("./routes/youtubeRoutes");
 const storageRoutes = require("./routes/storageRoutes");
 const toolRoutes = require("./routes/toolRoutes");
@@ -29,6 +32,7 @@ const portfolioRoutes = require("./routes/portfolioRoutes");
 const inquiryFormRoutes = require("./routes/inquiryFormRoutes");
 const User = require("./models/User");
 const { runPaymentCycleCheck } = require("./utils/paymentCycle");
+const { sendWhatsApp } = require("./utils/whatsapp");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -73,6 +77,9 @@ app.use("/api/telecaller", telecallerRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/messages", messageRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use("/api/finance", financeRoutes);
+app.use("/api/certificates", certificateRoutes);
+app.use("/api/testimonials", testimonialRoutes);
 app.use("/api/admin/youtube", youtubeRoutes);
 app.use("/api/admin/storage", storageRoutes);
 app.use("/api/tools", toolRoutes);
@@ -110,11 +117,11 @@ server.headersTimeout = server.requestTimeout + 5000;
 // Deactivates students whose payment cycle lapsed unpaid, and rolls forward
 // the cycle for anyone caught up. Runs on boot, then every 15 minutes.
 const runCycleJob = () => {
-  runPaymentCycleCheck(User)
-    .then(({ deactivated, rolledOver, checked }) => {
-      if (deactivated || rolledOver) {
+  runPaymentCycleCheck(User, sendWhatsApp)
+    .then(({ deactivated, rolledOver, reminded, checked }) => {
+      if (deactivated || rolledOver || reminded) {
         console.log(
-          `[payment-cycle] checked ${checked}, deactivated ${deactivated}, rolled over ${rolledOver}`
+          `[payment-cycle] checked ${checked}, deactivated ${deactivated}, rolled over ${rolledOver}, reminded ${reminded}`
         );
       }
     })

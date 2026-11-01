@@ -163,6 +163,9 @@ exports.getResult = async (req, res) => {
     res.json({
       score: submission.score,
       totalMarks: submission.totalMarks,
+      adjustment: submission.adjustment || 0,
+      review: submission.review || "",
+      reviewedAt: submission.reviewedAt,
       questions: exam.questions.map((q) => ({
         _id: q._id,
         text: q.text,
