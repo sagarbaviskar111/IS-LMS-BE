@@ -11,6 +11,7 @@ const { NO_GATEWAY_MESSAGE, getGateway, paymentMode, createOrder, verifyPayment 
 const { openStudentOrder, payStudentOrder, alreadyRecorded, publicPayment, respondError } = require("../utils/paymentOrders");
 const { DAY_MS, enforceFeeDeadline } = require("../utils/paymentCycle");
 const { resolveInstitute } = require("../utils/institute");
+const { sessionUser } = require("../utils/sessionUser");
 const { sendPasswordResetEmail } = require("../utils/email");
 const { uploadFile, deleteFile, resolveResourceType } = require("../utils/cloudinary");
 
@@ -89,13 +90,21 @@ exports.login = async (req, res) => {
       return res.status(403).json({ message, deactivatedForPayment: !!user.deactivatedForPayment, canPayOnline });
     }
 
+    // A sub-admin works only while its admin's account is active.
+    if (user.role === "subadmin") {
+      const owner = await User.findById(user.admin).select("isActive");
+      if (!owner || !owner.isActive) {
+        return res.status(403).json({ message: "This institute's account is not active. Please contact the admin." });
+      }
+    }
+
     const institute = await resolveInstitute(user);
     // superadmin isn't tied to any institute — routed under the fixed
     // /platform prefix instead (reserved in utils/slug.js).
     const instituteSlug = user.role === "superadmin" ? "platform" : institute?.slug;
     const token = generateToken(user, instituteSlug);
     res.cookie("token", token, cookieOptions);
-    res.json({ user: user.toJSON(), institute });
+    res.json({ user: await sessionUser(user), institute });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
@@ -437,7 +446,7 @@ exports.logout = (req, res) => {
 
 exports.me = async (req, res) => {
   const institute = await resolveInstitute(req.user);
-  res.json({ user: req.user.toJSON(), institute });
+  res.json({ user: await sessionUser(req.user), institute });
 };
 
 // Every role edits their own name/phone/photo here — nothing else. Email,
@@ -485,7 +494,7 @@ exports.updateMe = async (req, res) => {
 
     await user.save();
     const institute = await resolveInstitute(user);
-    res.json({ user: user.toJSON(), institute });
+    res.json({ user: await sessionUser(user), institute });
   } catch (err) {
     if (req.file) fs.unlink(req.file.path, () => {});
     res.status(500).json({ message: "Server error" });

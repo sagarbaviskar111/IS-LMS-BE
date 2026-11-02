@@ -2,7 +2,9 @@ const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 const { getFileUrl } = require("../utils/cloudinary");
 
-const ROLES = ["superadmin", "admin", "student", "teacher", "telecaller"];
+// A subadmin is a helper the admin created: it belongs to that admin (`admin`) and may
+// only use the modules listed in `permissions` (see utils/permissions.js).
+const ROLES = ["superadmin", "admin", "subadmin", "student", "teacher", "telecaller"];
 
 const userSchema = new mongoose.Schema(
   {
@@ -18,6 +20,8 @@ const userSchema = new mongoose.Schema(
       cloudinaryResourceType: { type: String, default: null },
     },
     isActive: { type: Boolean, default: true },
+    // subadmin only: { moduleKey: "view" | "manage" }
+    permissions: { type: mongoose.Schema.Types.Mixed, default: {} },
     // Set when an admin "deletes" a student: the account is hidden and locked, but
     // its attendance, submissions and notifications stay attached. Restorable.
     archivedAt: { type: Date, default: null },

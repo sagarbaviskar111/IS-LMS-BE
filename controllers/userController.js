@@ -10,6 +10,7 @@ const { searchRegex, pickSort, CASE_INSENSITIVE } = require("../utils/listQuery"
 const { DAY_MS } = require("../utils/paymentCycle");
 const { generateUniqueSlug } = require("../utils/slug");
 const { saveEmailCredentials, verifySenderCredentials, sendTestEmail: sendTestEmailTo, sentToday, DAILY_REMINDER_LIMIT } = require("../utils/email");
+const { hasLevel } = require("../utils/permissions");
 
 // PUBLIC_API_URL (e.g. https://api.example.com, or an ngrok URL while testing
 // locally) wins over the request's own host: external senders like Google
@@ -30,6 +31,15 @@ const MANAGEABLE_ROLES = {
 const canManageRole = (actorRole, targetRole) => {
   const allowed = MANAGEABLE_ROLES[actorRole] || [];
   return allowed.includes(targetRole);
+};
+
+// A sub-admin may only manage the kinds of account its permissions cover, and only change
+// them when it has "manage" (view is read only).
+const canManage = (req, targetRole) => {
+  if (!canManageRole(req.user.role, targetRole)) return false;
+  if (!req.actor) return true;
+  const need = ["GET", "HEAD"].includes(req.method) ? "view" : "manage";
+  return hasLevel(req.actor.permissions, targetRole === "student" ? "students" : "team", need);
 };
 
 const isSameTenant = (actor, user) => {
@@ -95,7 +105,7 @@ exports.createUser = async (req, res) => {
       return res.status(400).json({ message: "name, email, password and role are required" });
     }
 
-    if (!canManageRole(req.user.role, role)) {
+    if (!canManage(req, role)) {
       return res.status(403).json({ message: `You are not allowed to create a ${role} account` });
     }
 
@@ -184,7 +194,7 @@ const MAX_BULK_ROWS = 500;
 exports.bulkCreateUsers = async (req, res) => {
   try {
     const { role, rows } = req.body;
-    if (!["student", "teacher", "telecaller"].includes(role) || !canManageRole(req.user.role, role)) {
+    if (!["student", "teacher", "telecaller"].includes(role) || !canManage(req, role)) {
       return res.status(403).json({ message: `You are not allowed to create ${role} accounts` });
     }
     if (!Array.isArray(rows) || rows.length === 0) {
@@ -286,7 +296,8 @@ exports.bulkCreateUsers = async (req, res) => {
 
 exports.listUsers = async (req, res) => {
   try {
-    const allowedRoles = MANAGEABLE_ROLES[req.user.role] || [];
+    const allowedRoles = (MANAGEABLE_ROLES[req.user.role] || []).filter((r) => canManage(req, r));
+    if (allowedRoles.length === 0) return res.status(403).json({ message: "Not authorized to view users" });
     const filter = { role: { $in: allowedRoles } };
 
     if (req.query.role) {
@@ -365,7 +376,7 @@ exports.getUser = async (req, res) => {
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    if (!canManageRole(req.user.role, user.role) || !isSameTenant(req.user, user)) {
+    if (!canManage(req, user.role) || !isSameTenant(req.user, user)) {
       return res.status(403).json({ message: "Not authorized" });
     }
 
@@ -380,7 +391,7 @@ exports.updateUser = async (req, res) => {
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    if (!canManageRole(req.user.role, user.role) || !isSameTenant(req.user, user)) {
+    if (!canManage(req, user.role) || !isSameTenant(req.user, user)) {
       return res.status(403).json({ message: "Not authorized to modify this user" });
     }
 
@@ -461,7 +472,7 @@ exports.deleteUser = async (req, res) => {
     const user = await User.findById(req.params.id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    if (!canManageRole(req.user.role, user.role) || !isSameTenant(req.user, user)) {
+    if (!canManage(req, user.role) || !isSameTenant(req.user, user)) {
       return res.status(403).json({ message: "Not authorized to delete this user" });
     }
 
@@ -489,7 +500,7 @@ exports.restoreUser = async (req, res) => {
     const user = await User.findById(req.params.id).setOptions({ withArchived: true });
     if (!user || !user.archivedAt) return res.status(404).json({ message: "Archived student not found" });
 
-    if (!canManageRole(req.user.role, user.role) || !isSameTenant(req.user, user)) {
+    if (!canManage(req, user.role) || !isSameTenant(req.user, user)) {
       return res.status(403).json({ message: "Not authorized to restore this user" });
     }
 

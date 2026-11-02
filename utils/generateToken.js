@@ -6,7 +6,9 @@ const jwt = require("jsonwebtoken");
 // that was current when they signed in.
 const generateToken = (user, instituteSlug) => {
   return jwt.sign(
-    { id: user._id, role: user.role, instituteSlug: instituteSlug || null },
+    // A sub-admin uses the admin's dashboard URLs, so its token carries the admin role for routing;
+    // the server still loads the real account (and its limits) from `id`.
+    { id: user._id, role: user.role === "subadmin" ? "admin" : user.role, instituteSlug: instituteSlug || null },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRE || "7d" }
   );
