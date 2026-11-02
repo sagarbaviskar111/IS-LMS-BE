@@ -24,6 +24,16 @@ const certificateSchema = new mongoose.Schema(
       institute_name: { type: String, default: "" },
       date: { type: Date, required: true },
     },
+    // The group this certificate was issued in, if the admin made one.
+    batch: { type: mongoose.Schema.Types.ObjectId, ref: "CertificateBatch", default: null },
+    // false = the QR code is left off this certificate's PDF (the verify link still works).
+    qrEnabled: { type: Boolean, default: true },
+    // Emailing the PDF to the recipient.
+    emailStatus: {
+      sentAt: { type: Date, default: null },
+      to: { type: String, default: "" },
+      error: { type: String, default: "" },
+    },
     status: { type: String, enum: ["active", "revoked"], default: "active" },
     revokedReason: { type: String, trim: true, maxlength: 300, default: "" },
     revokedAt: { type: Date, default: null },
@@ -35,5 +45,6 @@ const certificateSchema = new mongoose.Schema(
 certificateSchema.index({ admin: 1, certificateNo: 1 }, { unique: true });
 certificateSchema.index({ admin: 1, createdAt: -1 });
 certificateSchema.index({ student: 1, status: 1 });
+certificateSchema.index({ batch: 1 });
 
 module.exports = mongoose.model("Certificate", certificateSchema);

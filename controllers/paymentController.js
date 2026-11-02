@@ -10,6 +10,7 @@ const {
 const { paymentDeadline, DAY_MS } = require("../utils/paymentCycle");
 const User = require("../models/User");
 const Payment = require("../models/Payment");
+const PaymentOrder = require("../models/PaymentOrder");
 const paginate = require("../utils/paginate");
 
 const loadOwnedStudent = async (req) => {
@@ -233,6 +234,40 @@ exports.editInstallment = async (req, res) => {
     syncFromSchedule(student);
     await student.save();
     res.json({ student: summaryOf(student) });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Online payments the institute should look at: money Razorpay confirmed that
+// is not yet recorded (e.g. a registration the student did not finish), or
+// more money than was owed.
+exports.attentionOrders = async (req, res) => {
+  try {
+    const orders = await PaymentOrder.find({
+      admin: req.user._id,
+      $or: [
+        { status: "paid", paidAt: { $lt: new Date(Date.now() - 2 * 60 * 1000) } },
+        { status: "fulfilled", excess: { $gt: 0 } },
+      ],
+    })
+      .populate("student", "name email")
+      .sort({ paidAt: -1 })
+      .limit(50);
+    res.json({
+      orders: orders.map((o) => ({
+        _id: o._id,
+        purpose: o.purpose,
+        amount: o.amount,
+        excess: o.excess,
+        status: o.status,
+        paidAt: o.paidAt,
+        student: o.student ? { name: o.student.name, email: o.student.email } : null,
+        email: o.meta?.email || null,
+        razorpayOrderId: o.razorpayOrderId,
+        razorpayPaymentId: o.razorpayPaymentId,
+      })),
+    });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }

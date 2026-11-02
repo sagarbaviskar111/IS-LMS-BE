@@ -6,6 +6,7 @@ const {
   extendDeadline,
   reactivateStudent,
   editInstallment,
+  attentionOrders,
 } = require("../controllers/paymentController");
 const { adminReceipt } = require("../controllers/receiptController");
 const { protect, authorize } = require("../middleware/auth");
@@ -15,6 +16,7 @@ const router = express.Router();
 router.use(protect, authorize("admin"));
 
 router.get("/receipts/:id", adminReceipt);
+router.get("/orders/attention", attentionOrders);
 router.get("/students/:id", getStudentPayment);
 router.patch("/students/:id", updatePaymentDetails);
 router.post("/students/:id/record", recordPayment);

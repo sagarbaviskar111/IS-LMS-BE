@@ -9,6 +9,7 @@ const {
   createLeadPaymentOrder,
   verifyLeadPayment,
   payDues,
+  createDuesPaymentOrder,
   logout,
   me,
   updateMe,
@@ -28,7 +29,9 @@ router.get("/lead-info", leadInfo);
 router.post("/register-lead", registerViaLead);
 router.post("/lead-payment/order", createLeadPaymentOrder);
 router.post("/lead-payment/verify", verifyLeadPayment);
+router.post("/dues-payment/order", createDuesPaymentOrder);
 router.post("/dues-payment", payDues);
+router.post("/me/dues-payment/order", protect, createDuesPaymentOrder);
 router.post("/me/dues-payment", protect, payDues);
 router.post("/logout", logout);
 router.get("/me", protect, me);

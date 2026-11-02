@@ -3,9 +3,12 @@ const path = require("path");
 const Course = require("../models/Course");
 const CourseRegistration = require("../models/CourseRegistration");
 const Payment = require("../models/Payment");
+const { NO_GATEWAY_MESSAGE, paymentMode } = require("../utils/gateway");
+const { openRegistrationOrder, claimRegistrationOrder, markRegistrationFulfilled, respondError } = require("../utils/paymentOrders");
 const StudentEnrollment = require("../models/StudentEnrollment");
 const User = require("../models/User");
-const { getFileUrl, uploadFile } = require("../utils/cloudinary");
+const { Readable } = require("stream");
+const { getFileUrl, uploadFile, uploadPrivate, deletePrivate, getPrivateFileUrl } = require("../utils/cloudinary");
 const { normalizeEmail, normalizeName, normalizePhone } = require("../utils/validators");
 const { REGISTRATION_UPLOAD_DIR } = require("../utils/upload");
 const { DAY_MS, round2, buildSchedule, paymentTerms } = require("../utils/coursePayment");
@@ -18,9 +21,13 @@ const removeFiles = (files) => {
   }
 };
 
-const fileRef = (f, docType = "") => ({
-  filename: f.filename,
-  mimetype: f.mimetype,
+// What is saved on the registration for one stored (private Cloudinary) file.
+const fileRef = (stored, f, docType = "") => ({
+  cloudinaryPublicId: stored.cloudinaryPublicId,
+  cloudinaryResourceType: stored.cloudinaryResourceType,
+  format: stored.format,
+  bytes: stored.bytes,
+  mimetype: stored.mimetype,
   originalName: f.originalname,
   docType,
 });
@@ -69,8 +76,11 @@ exports.getRegistrationInfo = async (req, res) => {
     const ctx = await resolveLink(req.params.token, req.query.slug);
     if (ctx.status) return res.status(ctx.status).json({ message: ctx.message });
     const { course, admin, enrollment, student } = ctx;
+    const pm = await paymentMode(course.admin);
 
     res.json({
+      // gateway = real Razorpay checkout, dev = no keys on a dev machine, none = not available
+      paymentMode: pm.mode,
       institute: {
         name: admin?.name || "",
         slug: admin?.instituteSlug || "",
@@ -118,13 +128,18 @@ exports.getRegistrationInfo = async (req, res) => {
 
 // Finishes the registration in one step: stores the verification files and the
 // details, creates (or, for a private link, activates) the student account and
-// records the payment — unless the admin already collected it.
-// NOTE: payment is a placeholder for now — the fixed amount is recorded as
-// paid; no money moves through a gateway yet.
+// records the payment — unless the admin already collected it. The fee is paid
+// through the institute's own Razorpay account and verified here before anything
+// is created (see createRegistrationOrder for step one).
 exports.submitRegistration = async (req, res) => {
   const files = req.files || {};
+  // Documents already sent to Cloudinary by this request; removed again if the
+  // registration does not finish, so no orphaned ID proofs are left behind.
+  const stored = [];
+  const discardStored = () => stored.forEach((s) => deletePrivate(s.cloudinaryPublicId, s.cloudinaryResourceType));
   const fail = (status, message) => {
     removeFiles(files);
+    discardStored();
     return res.status(status).json({ message });
   };
   try {
@@ -170,7 +185,49 @@ exports.submitRegistration = async (req, res) => {
     // a one-time plan, or the first installment (plus any installment charge).
     const amountPaid = alreadyPaid ? enrollment.amountPaid : round2(schedule[0].amount);
     if (!alreadyPaid && !(amountPaid > 0)) return fail(400, "This course has no payable amount yet — contact the institute");
+
+    // The fee is checked BEFORE anything is created: the paid Razorpay order has to
+    // match this course, plan, email and the exact amount set by the institute.
+    let paidOrder = null;
+    if (!alreadyPaid) {
+      const pm = await paymentMode(course.admin);
+      if (pm.mode === "none") return fail(400, NO_GATEWAY_MESSAGE);
+      if (pm.mode === "gateway") {
+        const claimed = await claimRegistrationOrder({
+          course,
+          token: req.params.token,
+          plan,
+          email: enrollment ? "" : email,
+          amount: amountPaid,
+          proof: { orderId: b.razorpayOrderId, paymentId: b.razorpayPaymentId, signature: b.razorpaySignature },
+        });
+        if (claimed.error) return fail(400, claimed.error);
+        paidOrder = claimed.order;
+      }
+    }
     const terms = alreadyPaid ? null : paymentTerms(schedule, amountPaid);
+
+    // Store the verification documents (compressed, private) before creating the
+    // account. If this fails, nothing exists yet and a payment already made on this
+    // link is reused on the next try, so the student is not charged twice.
+    const folder = `registrations/${course.admin}`;
+    const store = async (f, imageFormat) => {
+      const up = await uploadPrivate(f.path, { folder, mimetype: f.mimetype, imageFormat });
+      stored.push(up);
+      return up;
+    };
+    let docs;
+    try {
+      docs = {
+        id1: await store(files.idProof1[0]),
+        id2: await store(files.idProof2[0]),
+        selfie: await store(files.selfie[0]),
+        signature: await store(files.signature[0], "png"),
+      };
+    } catch (err) {
+      console.error("[course-registration] document upload failed:", err.message);
+      return fail(502, "We could not save your documents right now. Please try again in a minute — a payment you already made will not be charged again.");
+    }
 
     let student;
     if (enrollment) {
@@ -232,14 +289,16 @@ exports.submitRegistration = async (req, res) => {
     }
 
     if (!alreadyPaid) {
-      await Payment.create({
+      const payment = await Payment.create({
         student: student._id,
         admin: course.admin,
         amount: amountPaid,
-        method: "manual",
+        method: paidOrder ? "razorpay" : "manual",
         status: "paid",
+        ...(paidOrder ? { razorpayOrderId: paidOrder.razorpayOrderId, razorpayPaymentId: paidOrder.razorpayPaymentId } : {}),
         note: `Course registration: ${course.name} (${plan === "one_time" ? "one-time" : "installments"})`,
       });
+      if (paidOrder) await markRegistrationFulfilled(paidOrder, student, payment);
     }
 
     await CourseRegistration.create({
@@ -252,9 +311,9 @@ exports.submitRegistration = async (req, res) => {
       dateOfBirth,
       address,
       idType: idType1,
-      idProofs: [fileRef(files.idProof1[0], idType1), fileRef(files.idProof2[0], idType2)],
-      selfie: fileRef(files.selfie[0]),
-      signature: fileRef(files.signature[0]),
+      idProofs: [fileRef(docs.id1, files.idProof1[0], idType1), fileRef(docs.id2, files.idProof2[0], idType2)],
+      selfie: fileRef(docs.selfie, files.selfie[0]),
+      signature: fileRef(docs.signature, files.signature[0]),
       termsAcceptedAt: new Date(),
       plan,
       planTotal,
@@ -266,6 +325,9 @@ exports.submitRegistration = async (req, res) => {
       await enrollment.save();
     }
 
+    // Everything is in Cloudinary now; the temporary copies are not needed.
+    removeFiles(files);
+
     res.status(201).json({
       message: "Registration complete. You can now log in.",
       amountPaid,
@@ -275,10 +337,50 @@ exports.submitRegistration = async (req, res) => {
     });
   } catch (err) {
     removeFiles(files);
+    discardStored();
     if (err && err.code === 11000) {
       return res.status(409).json({ message: "An account with this email already exists — log in instead" });
     }
     res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Step one of paying at the end of registration: an order for the fee on the
+// institute's own Razorpay account. The student opens Razorpay checkout with it
+// and then submits the form together with the payment proof.
+exports.createRegistrationOrder = async (req, res) => {
+  try {
+    const b = req.body || {};
+    const ctx = await resolveLink(req.params.token, b.slug);
+    if (ctx.status) return res.status(ctx.status).json({ message: ctx.message });
+    const { course, enrollment } = ctx;
+    if (enrollment && enrollment.paidStatus !== "unpaid") {
+      return res.status(400).json({ message: "Nothing to pay — your fees were already received" });
+    }
+
+    const schedule = buildSchedule(course, b.plan);
+    if (!schedule) return res.status(400).json({ message: "Choose a valid payment option" });
+    const amount = round2(schedule[0].amount);
+    if (!(amount > 0)) return res.status(400).json({ message: "This course has no payable amount yet — contact the institute" });
+
+    // Don't take money from someone who can't finish registering.
+    const email = enrollment ? "" : normalizeEmail(b.email) || "";
+    if (!enrollment && email && (await User.findOne({ email }))) {
+      return res.status(409).json({ message: "An account with this email already exists — log in instead" });
+    }
+
+    res.json(
+      await openRegistrationOrder({
+        course,
+        token: req.params.token,
+        plan: b.plan,
+        email,
+        amount,
+        name: enrollment ? ctx.student.name : normalizeName(b.name),
+      })
+    );
+  } catch (err) {
+    respondError(res, err, "Could not start the payment");
   }
 };
 
@@ -321,10 +423,20 @@ exports.getRegistrationFile = async (req, res) => {
     const file = kind === "id1" ? reg.idProofs[0] : kind === "id2" ? reg.idProofs[1] : kind === "selfie" ? reg.selfie : kind === "signature" ? reg.signature : null;
     if (!file) return res.status(404).json({ message: "File not found" });
 
-    const full = path.join(REGISTRATION_UPLOAD_DIR, path.basename(file.filename));
-    if (!fs.existsSync(full)) return res.status(404).json({ message: "File is missing from storage" });
     res.setHeader("Content-Type", file.mimetype || "application/octet-stream");
     res.setHeader("Cache-Control", "private, no-store");
+
+    if (file.cloudinaryPublicId) {
+      // The signed link is used only here, on the server; the admin never sees it.
+      const upstream = await fetch(getPrivateFileUrl(file.cloudinaryPublicId, file.cloudinaryResourceType, file.format));
+      if (!upstream.ok || !upstream.body) return res.status(404).json({ message: "File is missing from storage" });
+      return Readable.fromWeb(upstream.body).pipe(res);
+    }
+
+    // Registrations made before the move to Cloudinary still sit on disk.
+    if (!file.filename) return res.status(404).json({ message: "File not found" });
+    const full = path.join(REGISTRATION_UPLOAD_DIR, path.basename(file.filename));
+    if (!fs.existsSync(full)) return res.status(404).json({ message: "File is missing from storage" });
     res.sendFile(full);
   } catch (err) {
     res.status(500).json({ message: "Server error" });

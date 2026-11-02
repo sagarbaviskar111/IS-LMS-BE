@@ -7,7 +7,8 @@ const Notification = require("../models/Notification");
 const generateToken = require("../utils/generateToken");
 const { closeOutIfFullyPaid } = require("../utils/feeStatus");
 const { hasSchedule, applyPayment } = require("../utils/installmentSchedule");
-const { getRazorpay } = require("../utils/razorpay");
+const { NO_GATEWAY_MESSAGE, getGateway, paymentMode, createOrder, verifyPayment } = require("../utils/gateway");
+const { openStudentOrder, payStudentOrder, alreadyRecorded, publicPayment, respondError } = require("../utils/paymentOrders");
 const { DAY_MS, enforceFeeDeadline } = require("../utils/paymentCycle");
 const { resolveInstitute } = require("../utils/institute");
 const { sendPasswordResetEmail } = require("../utils/email");
@@ -84,7 +85,7 @@ exports.login = async (req, res) => {
       }
       // A student blocked only for unpaid fees can clear them online right
       // from the login screen (see createDuesPaymentOrder).
-      const canPayOnline = !!user.deactivatedForPayment && user.balanceDue > 0;
+      const canPayOnline = !!user.deactivatedForPayment && user.balanceDue > 0 && (await paymentMode(user.admin)).mode !== "none";
       return res.status(403).json({ message, deactivatedForPayment: !!user.deactivatedForPayment, canPayOnline });
     }
 
@@ -296,28 +297,22 @@ exports.createLeadPaymentOrder = async (req, res) => {
       return res.status(400).json({ message: "This registration has already been completed" });
     }
 
-    const amountPaise = Math.round(student.balanceDue * 100);
-    const razorpay = getRazorpay();
-    const order = await razorpay.orders.create({
-      amount: amountPaise,
-      currency: "INR",
+    // The fee goes to the institute this lead belongs to, with its own keys.
+    const gateway = await getGateway(student.admin);
+    if (!gateway) return res.status(400).json({ message: NO_GATEWAY_MESSAGE });
+
+    const order = await createOrder(gateway, {
+      amount: student.balanceDue,
       receipt: `reg_${student._id}`,
       notes: { studentId: String(student._id), leadId: String(lead._id) },
     });
 
-    student.pendingRazorpayOrderId = order.id;
+    student.pendingRazorpayOrderId = order.orderId;
     await student.save();
 
-    res.json({
-      orderId: order.id,
-      amount: amountPaise,
-      currency: order.currency,
-      keyId: process.env.RAZORPAY_KEY_ID,
-      name: student.name,
-      email: student.email,
-    });
+    res.json({ ...order, name: student.name, email: student.email });
   } catch (err) {
-    res.status(500).json({ message: err.message || "Could not create payment order" });
+    res.status(500).json({ message: err?.error?.description || "Could not create payment order" });
   }
 };
 
@@ -345,18 +340,16 @@ exports.verifyLeadPayment = async (req, res) => {
       return res.status(400).json({ message: "Payment verification failed" });
     }
 
-    const expectedSignature = crypto
-      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET || "")
-      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
-      .digest("hex");
-
-    const signaturesMatch =
-      expectedSignature.length === String(razorpay_signature).length &&
-      crypto.timingSafeEqual(Buffer.from(expectedSignature), Buffer.from(String(razorpay_signature)));
-
-    if (!signaturesMatch) {
-      return res.status(400).json({ message: "Payment verification failed" });
-    }
+    const gateway = await getGateway(student.admin);
+    if (!gateway) return res.status(400).json({ message: NO_GATEWAY_MESSAGE });
+    const problem = await verifyPayment(gateway, {
+      orderId: razorpay_order_id,
+      paymentId: razorpay_payment_id,
+      signature: razorpay_signature,
+      amount: student.balanceDue,
+      notes: { studentId: String(student._id), leadId: String(lead._id) },
+    });
+    if (problem) return res.status(400).json({ message: problem });
 
     const paidAmount = student.balanceDue;
     student.isActive = true;
@@ -408,34 +401,32 @@ const duesStudentError = (student) => {
 exports.payDues = async (req, res) => {
   try {
     const student = await resolveDuesStudent(req);
+    const proof = req.body?.razorpay;
+    const bad = duesStudentError(student);
+    if (bad) {
+      // Recorded already by the background check while the browser was still open?
+      const done = student && student.role === "student" ? await alreadyRecorded(student, "dues", proof?.orderId) : null;
+      if (!done) return res.status(bad[0]).json({ message: bad[1] });
+      return res.json({ message: "Payment received. Your account is active.", payment: publicPayment(done.payment), excess: done.order.excess || 0 });
+    }
+    const { order, payment } = await payStudentOrder(student, "dues", proof);
+    res.json({ message: "Payment received. Your account is active.", payment: publicPayment(payment), excess: order.excess || 0 });
+  } catch (err) {
+    respondError(res, err);
+  }
+};
+
+// Step one of paying dues online: an order on the institute's Razorpay account.
+// In development with no keys it answers { mode: "dev" } and the page records
+// the payment directly instead of opening checkout.
+exports.createDuesPaymentOrder = async (req, res) => {
+  try {
+    const student = await resolveDuesStudent(req);
     const bad = duesStudentError(student);
     if (bad) return res.status(bad[0]).json({ message: bad[1] });
-
-    const paidAmount = student.balanceDue;
-    if (hasSchedule(student)) {
-      // Settles the installments that are due; the next one then becomes current.
-      applyPayment(student, paidAmount);
-    } else {
-      student.balanceDue = 0;
-    }
-    student.isActive = true;
-    student.deactivatedForPayment = false;
-    student.deactivationMessage = null;
-    if (!hasSchedule(student)) student.paymentGraceUntil = null;
-    await student.save();
-
-    await Payment.create({
-      student: student._id,
-      admin: student.admin,
-      amount: paidAmount,
-      method: "online",
-      status: "paid",
-    });
-    await closeOutIfFullyPaid(student);
-
-    res.json({ message: "Payment received. Your account is active." });
+    res.json(await openStudentOrder(student, "dues"));
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    respondError(res, err, "Could not start the payment");
   }
 };
 

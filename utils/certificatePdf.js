@@ -108,7 +108,7 @@ const makeFontBook = (doc) => {
 };
 
 // Draws one certificate onto a new page of `doc`.
-const drawCertificate = async (doc, fonts, template, imageBytes, { values, certificateNo, verifyUrl }) => {
+const drawCertificate = async (doc, fonts, template, imageBytes, { values, certificateNo, verifyUrl, showQr = true }) => {
   const img = isPng(imageBytes) ? await doc.embedPng(imageBytes) : await doc.embedJpg(imageBytes);
   const ratio = template.image.width / template.image.height;
   const W = ratio >= 1 ? PAGE_LONG_SIDE : PAGE_LONG_SIDE * ratio;
@@ -138,7 +138,8 @@ const drawCertificate = async (doc, fonts, template, imageBytes, { values, certi
     page.drawText(text, { x, y, size, font, color: hexToRgb(field.color) });
   }
 
-  if (template.qr?.enabled && verifyUrl) {
+  // The template says where the QR goes; showQr lets one certificate leave it off.
+  if (template.qr?.enabled && showQr && verifyUrl) {
     const png = await QRCode.toBuffer(verifyUrl, { margin: 1, width: 400, errorCorrectionLevel: "M" });
     const qrImg = await doc.embedPng(png);
     const side = (template.qr.size / 100) * W;
@@ -151,7 +152,7 @@ const drawCertificate = async (doc, fonts, template, imageBytes, { values, certi
   }
 };
 
-// items: [{ template, values, certificateNo, verifyUrl }] -> one PDF, one page each.
+// items: [{ template, values, certificateNo, verifyUrl, showQr? }] -> one PDF, one page each.
 const buildPdf = async (items) => {
   const doc = await PDFDocument.create();
   const fonts = makeFontBook(doc);

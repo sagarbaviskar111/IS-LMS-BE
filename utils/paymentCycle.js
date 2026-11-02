@@ -62,7 +62,7 @@ const enforceFeeDeadline = async (student) => {
 //  - the due date has passed, they still owe money, and the extra grace days
 //    (or an admin extension) are over: deactivate the account for non-payment.
 //  - they owe money and the due date is within a day or already passed (but
-//    still inside the grace period): send one WhatsApp reminder a day.
+//    still inside the grace period): email one reminder a day (from the institute's own sender email).
 //  - the due date has passed but the balance is already clear: roll over to
 //    the next cycle (charge the next installment, push the due date out).
 const runPaymentCycleCheck = async (User, sendMessage) => {
@@ -71,7 +71,9 @@ const runPaymentCycleCheck = async (User, sendMessage) => {
     role: "student",
     isActive: true,
     nextDueDate: { $ne: null, $lte: new Date(now.getTime() + DAY_MS) },
-  }).populate("batch", "paymentCycleDays");
+  })
+    .sort({ nextDueDate: 1 }) // most overdue first, so they get the daily email slots
+    .populate("batch", "paymentCycleDays");
 
   let deactivated = 0;
   let rolledOver = 0;
@@ -97,13 +99,16 @@ const runPaymentCycleCheck = async (User, sendMessage) => {
       }
       const lastSent = student.lastFeeReminderAt;
       if (sendMessage && (!lastSent || now - lastSent >= REMINDER_GAP_MS)) {
-        const result = await sendMessage(student.phone, reminderText(student, deadline, now)).catch((err) => ({
-          sent: false,
-          reason: err.message,
-        }));
+        const result = await sendMessage(student, {
+          subject: student.nextDueDate > now ? "Fee due soon" : "Fee overdue",
+          text: reminderText(student, deadline, now),
+        }).catch((err) => ({ sent: false, reason: err.message }));
+        // Over the institute's daily email limit: leave this student unstamped so
+        // they are first in line when the limit resets tomorrow.
+        if (result.limited) continue;
         if (result.sent) reminded += 1;
-        else if (result.reason !== "no phone number") console.log(`[fee-reminder] ${student.email}: ${result.reason}`);
-        // Stamp even on failure/dry-run so a bad number isn't retried every 15 minutes.
+        else console.log(`[fee-reminder] ${student.email}: ${result.reason}`);
+        // Stamp even on failure so a bad address isn't retried every 15 minutes.
         student.lastFeeReminderAt = now;
         await student.save();
       }

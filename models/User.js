@@ -69,7 +69,7 @@ const userSchema = new mongoose.Schema(
       ],
       default: [],
     },
-    // When the last WhatsApp fee reminder went out — keeps the job to one per day.
+    // When the last fee reminder email went out — keeps the job to one per day.
     lastFeeReminderAt: { type: Date, default: null },
     // True when isActive was set to false by the payment-cycle job specifically
     // (as opposed to an admin manually deactivating the account), so login can
@@ -129,6 +129,21 @@ const userSchema = new mongoose.Schema(
     emailSender: {
       address: { type: String, default: null },
       appPassword: { type: String, default: null, select: false },
+    },
+    // Emails sent today through that Gmail (Gmail allows about 100 a day).
+    // `day` is an IST date like "2026-11-02"; the count restarts each day.
+    emailQuota: {
+      day: { type: String, default: null },
+      count: { type: Number, default: 0 },
+    },
+
+    // --- Razorpay (admin only) ---
+    // Each institute collects fees into its OWN Razorpay account, so it brings
+    // its own key pair. The secret is stored encrypted and never sent back.
+    razorpay: {
+      keyId: { type: String, default: null },
+      keySecret: { type: String, default: null, select: false },
+      connectedAt: { type: Date, default: null },
     },
 
     // A telecaller's own saved one-tap messages for WhatsApp / SMS / email.
@@ -224,6 +239,7 @@ userSchema.set("toJSON", {
     }
     if (ret.videoStorage) delete ret.videoStorage.secretAccessKey;
     if (ret.emailSender) delete ret.emailSender.appPassword;
+    if (ret.razorpay) delete ret.razorpay.keySecret;
     ret.avatarUrl = ret.avatar?.cloudinaryPublicId
       ? getFileUrl(ret.avatar.cloudinaryPublicId, ret.avatar.cloudinaryResourceType)
       : null;

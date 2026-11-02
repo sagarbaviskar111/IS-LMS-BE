@@ -37,7 +37,15 @@ const ledgerBase = (adminId) => [
             amount: 1,
             category: { $literal: "Student fees" },
             title: {
-              $concat: [{ $ifNull: [{ $arrayElemAt: ["$stu.name", 0] }, "Student"] }, " - fee payment"],
+              $concat: [
+                {
+                  $ifNull: [
+                    { $arrayElemAt: ["$stu.name", 0] },
+                    { $cond: [{ $gt: [{ $strLenCP: { $ifNull: ["$studentName", ""] } }, 0] }, "$studentName", "Student"] },
+                  ],
+                },
+                " - fee payment",
+              ],
             },
             note: { $ifNull: ["$note", ""] },
             method: { $cond: [{ $eq: ["$method", "manual"] }, "cash", "online"] },

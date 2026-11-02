@@ -3,6 +3,7 @@ const crypto = require("crypto");
 const mongoose = require("mongoose");
 const Certificate = require("../models/Certificate");
 const CertificateTemplate = require("../models/CertificateTemplate");
+const CertificateBatch = require("../models/CertificateBatch");
 const User = require("../models/User");
 const Batch = require("../models/Batch");
 const Course = require("../models/Course");
@@ -10,6 +11,7 @@ const { uploadFile, deleteFile, getFileUrl } = require("../utils/cloudinary");
 const { buildPdf } = require("../utils/certificatePdf");
 const { shapeInstitute } = require("../utils/institute");
 const { notifyUsers } = require("../utils/notify");
+const { sendCertificateEmail } = require("../utils/email");
 const paginate = require("../utils/paginate");
 
 const FIELD_KEYS = ["student_name", "certificate_no", "course", "date", "grade", "batch", "institute_name", "custom"];
@@ -290,9 +292,18 @@ const courseNameOf = async (student, batchById, courseById) => {
   return batch?.course ? courseById.get(String(batch.course)) || "" : "";
 };
 
+// What the admin chose on the issue form besides who gets it:
+// a name for a certificate batch (empty = no batch), whether the QR code is
+// drawn, and whether to email everyone right after issuing.
+const readIssueOptions = (b) => ({
+  batchName: String(b?.batchName || "").trim().slice(0, 100),
+  qrEnabled: b?.qrEnabled !== false,
+  sendEmail: !!b?.sendEmail,
+});
+
 // Shared by the pick-students and upload-sheet paths.
 // entries: [{ student (User|null), name, email, phone, course, batch, grade, date (Date), certificateNo? }]
-const issueEntries = async (req, template, entries, allowDuplicate) => {
+const issueEntries = async (req, template, entries, allowDuplicate, options = {}) => {
   const skipped = [];
   const rows = [];
   for (const e of entries) {
@@ -307,7 +318,16 @@ const issueEntries = async (req, template, entries, allowDuplicate) => {
     }
     rows.push(e);
   }
-  if (!rows.length) return { certificates: [], skipped };
+  if (!rows.length) return { certificates: [], skipped, batch: null };
+
+  const batch = options.batchName
+    ? await CertificateBatch.create({
+        admin: req.user._id,
+        name: options.batchName,
+        template: template._id,
+        createdBy: req.user._id,
+      })
+    : null;
 
   // Reserve a block of numbers atomically so concurrent bulk runs never clash.
   const autoCount = rows.filter((r) => !r.certificateNo).length;
@@ -344,17 +364,40 @@ const issueEntries = async (req, template, entries, allowDuplicate) => {
       institute_name: req.user.name,
       date: r.date,
     },
+    batch: batch?._id || null,
+    qrEnabled: options.qrEnabled !== false,
     issuedBy: req.user._id,
   }));
 
-  const created = await Certificate.insertMany(docs);
+  let created;
+  try {
+    created = await Certificate.insertMany(docs);
+  } catch (err) {
+    // Don't leave an empty batch behind when nothing was issued.
+    if (batch) await batch.deleteOne().catch(() => {});
+    throw err;
+  }
   await notifyUsers(
     req.user,
     created.map((c) => c.student).filter(Boolean),
     "Certificate issued",
     "Your certificate is ready. You can download it from My Certificates."
   );
-  return { certificates: created.map((c) => shapeCert(c, template.name)), skipped };
+  const shaped = created.map((c) => shapeCert(c, template.name));
+  if (batch) shaped.forEach((c) => ((c.batchId = batch._id), (c.batchName = batch.name)));
+  return {
+    certificates: shaped,
+    skipped,
+    batch: batch ? { _id: batch._id, name: batch.name } : null,
+    createdIds: created.map((c) => c._id),
+  };
+};
+
+// After issuing: start emailing everyone if the admin asked for it.
+const maybeStartEmails = (req, out, options) => {
+  if (!options.sendEmail || !out.createdIds?.length) return null;
+  const started = startEmailJob(req.user, out.createdIds, { resend: false });
+  return started.error ? { error: started.error } : { jobId: started.jobId, total: out.createdIds.length };
 };
 
 const dupNumber = (err) => err?.code === 11000 && /certificateNo/.test(err.message || "");
@@ -410,9 +453,12 @@ exports.issue = async (req, res) => {
       });
     }
 
-    const out = await issueEntries(req, template, entries, !!b.allowDuplicate);
+    const options = readIssueOptions(b);
+    const out = await issueEntries(req, template, entries, !!b.allowDuplicate, options);
     if (!out.certificates.length) return res.status(409).json({ message: "Nothing to issue", skipped: out.skipped });
-    res.status(201).json(out);
+    const emailJob = maybeStartEmails(req, out, options);
+    delete out.createdIds;
+    res.status(201).json({ ...out, emailJob });
   } catch (err) {
     if (dupNumber(err)) return res.status(409).json({ message: "That certificate number already exists - choose another" });
     console.error("[certificate] issue failed:", err.message);
@@ -503,8 +549,13 @@ exports.issueFromSheet = async (req, res) => {
     });
     if (!ready.length) return res.status(400).json({ message: "No valid rows to issue", invalid });
 
-    const out = await issueEntries(req, template, ready, !!b.allowDuplicate);
-    res.status(out.certificates.length ? 201 : 409).json({ ...out, invalid, message: out.certificates.length ? undefined : "Nothing to issue" });
+    const options = readIssueOptions(b);
+    const out = await issueEntries(req, template, ready, !!b.allowDuplicate, options);
+    const emailJob = maybeStartEmails(req, out, options);
+    delete out.createdIds;
+    res
+      .status(out.certificates.length ? 201 : 409)
+      .json({ ...out, emailJob, invalid, message: out.certificates.length ? undefined : "Nothing to issue" });
   } catch (err) {
     if (dupNumber(err)) return res.status(409).json({ message: "A certificate number in the sheet already exists" });
     console.error("[certificate] sheet issue failed:", err.message);
@@ -529,6 +580,12 @@ function shapeCert(c, templateName) {
     revokedReason: c.revokedReason,
     issuedAt: c.createdAt,
     verifyUrl: verifyUrlFor(c.verifyCode),
+    qrEnabled: c.qrEnabled !== false,
+    batchId: c.batch?._id || c.batch || null,
+    batchName: c.batch?.name || "",
+    hasEmail: !!c.recipient?.email,
+    emailedAt: c.emailStatus?.sentAt || null,
+    emailError: c.emailStatus?.error || "",
   };
 }
 
@@ -538,6 +595,7 @@ exports.listCertificates = async (req, res) => {
     const filter = { admin: req.user._id };
     if (req.query.template && mongoose.isValidObjectId(req.query.template)) filter.template = req.query.template;
     if (req.query.status === "active" || req.query.status === "revoked") filter.status = req.query.status;
+    if (req.query.batch && mongoose.isValidObjectId(req.query.batch)) filter.batch = req.query.batch;
     if (req.query.student && mongoose.isValidObjectId(req.query.student)) filter.student = req.query.student;
     if (req.query.q) {
       const rx = new RegExp(escapeRegex(String(req.query.q).slice(0, 80)), "i");
@@ -545,7 +603,12 @@ exports.listCertificates = async (req, res) => {
     }
     const [total, rows] = await Promise.all([
       Certificate.countDocuments(filter),
-      Certificate.find(filter).sort({ createdAt: -1, _id: -1 }).skip(skip).limit(limit).populate("template", "name"),
+      Certificate.find(filter)
+        .sort({ createdAt: -1, _id: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate("template", "name")
+        .populate("batch", "name"),
     ]);
     res.json({
       certificates: rows.map((c) => shapeCert(c)),
@@ -592,17 +655,22 @@ exports.restore = async (req, res) => {
 
 // ---- PDFs ------------------------------------------------------------------
 
-const pdfItems = async (certs) => {
+const templatesFor = async (certs) => {
   const templates = await CertificateTemplate.find({ _id: { $in: [...new Set(certs.map((c) => String(c.template)))] } });
-  const byId = new Map(templates.map((t) => [String(t._id), t]));
-  return certs
-    .filter((c) => byId.has(String(c.template)))
-    .map((c) => ({
-      template: byId.get(String(c.template)),
-      certificateNo: c.certificateNo,
-      verifyUrl: verifyUrlFor(c.verifyCode),
-      values: c.values,
-    }));
+  return new Map(templates.map((t) => [String(t._id), t]));
+};
+
+const pdfItem = (c, byId) => ({
+  template: byId.get(String(c.template)),
+  certificateNo: c.certificateNo,
+  verifyUrl: verifyUrlFor(c.verifyCode),
+  values: c.values,
+  showQr: c.qrEnabled !== false,
+});
+
+const pdfItems = async (certs) => {
+  const byId = await templatesFor(certs);
+  return certs.filter((c) => byId.has(String(c.template))).map((c) => pdfItem(c, byId));
 };
 
 exports.pdfOne = async (req, res) => {
@@ -681,5 +749,251 @@ exports.verify = async (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Anyone with the link (the QR page) can download the PDF of a genuine certificate.
+exports.verifyPdf = async (req, res) => {
+  try {
+    const code = String(req.params.code || "").toLowerCase();
+    if (!/^[a-f0-9]{12}$/.test(code)) return res.status(404).json({ message: "Certificate not found" });
+    const c = await Certificate.findOne({ verifyCode: code });
+    if (!c) return res.status(404).json({ message: "Certificate not found" });
+    if (c.status !== "active") return res.status(403).json({ message: "This certificate has been revoked" });
+    const items = await pdfItems([c]);
+    if (!items.length) return res.status(404).json({ message: "Certificate unavailable" });
+    sendPdf(res, await buildPdf(items), `${safeName(c.certificateNo)}.pdf`);
+  } catch (err) {
+    console.error("[certificate] public pdf failed:", err.message);
+    res.status(500).json({ message: "Could not generate the PDF" });
+  }
+};
+
+// ---- certificate batches ---------------------------------------------------
+
+exports.listBatches = async (req, res) => {
+  try {
+    const [batches, counts] = await Promise.all([
+      CertificateBatch.find({ admin: req.user._id }).sort({ createdAt: -1 }).limit(100).populate("template", "name"),
+      Certificate.aggregate([
+        { $match: { admin: req.user._id, batch: { $ne: null } } },
+        {
+          $group: {
+            _id: "$batch",
+            total: { $sum: 1 },
+            withEmail: { $sum: { $cond: [{ $gt: [{ $strLenCP: { $ifNull: ["$recipient.email", ""] } }, 0] }, 1, 0] } },
+            emailed: { $sum: { $cond: [{ $gt: ["$emailStatus.sentAt", null] }, 1, 0] } },
+          },
+        },
+      ]),
+    ]);
+    const byId = new Map(counts.map((r) => [String(r._id), r]));
+    res.json({
+      batches: batches.map((b) => {
+        const n = byId.get(String(b._id)) || { total: 0, withEmail: 0, emailed: 0 };
+        return {
+          _id: b._id,
+          name: b.name,
+          templateName: b.template?.name || "",
+          createdAt: b.createdAt,
+          total: n.total,
+          withEmail: n.withEmail,
+          emailed: n.emailed,
+        };
+      }),
+    });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---- QR code on / off ------------------------------------------------------
+
+// Leaves the QR code off (or puts it back on) the PDF of the chosen certificates.
+exports.setQr = async (req, res) => {
+  try {
+    const ids = (Array.isArray(req.body?.ids) ? req.body.ids : []).filter((i) => mongoose.isValidObjectId(i));
+    if (!ids.length) return res.status(400).json({ message: "Select at least one certificate" });
+    const enabled = req.body?.enabled !== false;
+    const r = await Certificate.updateMany({ _id: { $in: ids }, admin: req.user._id }, { $set: { qrEnabled: enabled } });
+    res.json({ updated: r.modifiedCount ?? r.nModified ?? 0, qrEnabled: enabled });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---- emailing certificates -------------------------------------------------
+
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MAX_EMAIL_JOB = 500;
+
+// Progress of running / recent email jobs, kept in memory. Which certificate was
+// emailed lives on the certificate itself, so a restart only loses the progress
+// bar; "email the ones not sent yet" then picks up where it stopped.
+const emailJobs = new Map();
+const activeJobByAdmin = new Map();
+
+// Emails one certificate's PDF. Returns { status, error? } where status is one of
+// sent | failed | limited | noEmail | revoked | setup.
+const deliverCertificate = async (admin, cert, template, { resend }) => {
+  if (cert.status !== "active") return { status: "revoked" };
+  const to = String(cert.recipient?.email || "").trim();
+  if (!to) return { status: "noEmail" };
+  if (!EMAIL_PATTERN.test(to)) {
+    await Certificate.updateOne({ _id: cert._id }, { $set: { "emailStatus.error": "The email address is not valid" } });
+    return { status: "failed", error: "The email address is not valid" };
+  }
+  if (!resend && cert.emailStatus?.sentAt) return { status: "alreadySent" };
+  if (!template) return { status: "failed", error: "The certificate template is no longer available" };
+
+  let pdf;
+  try {
+    pdf = await buildPdf([pdfItem(cert, new Map([[String(template._id), template]]))]);
+  } catch (err) {
+    console.error("[certificate] email pdf failed:", err.message);
+    return { status: "failed", error: "Could not create the PDF" };
+  }
+  const result = await sendCertificateEmail(admin._id, {
+    to,
+    name: cert.values.student_name,
+    instituteName: admin.name,
+    course: cert.values.course,
+    certificateNo: cert.certificateNo,
+    verifyUrl: verifyUrlFor(cert.verifyCode),
+    pdf,
+    filename: `${safeName(cert.certificateNo)}.pdf`,
+  });
+  if (result.sent) {
+    await Certificate.updateOne(
+      { _id: cert._id },
+      { $set: { "emailStatus.sentAt": new Date(), "emailStatus.to": to, "emailStatus.error": "" } }
+    );
+    return { status: "sent" };
+  }
+  if (result.limited) return { status: "limited" };
+  if (/sender email yet/.test(result.reason || "")) return { status: "setup", error: result.reason };
+  await Certificate.updateOne({ _id: cert._id }, { $set: { "emailStatus.error": String(result.reason || "Could not send").slice(0, 200) } });
+  return { status: "failed", error: result.reason };
+};
+
+const runEmailJob = async (admin, ids, resend, job) => {
+  const certs = await Certificate.find({ _id: { $in: ids }, admin: admin._id }).sort({ certificateNo: 1 });
+  const templates = await templatesFor(certs);
+  job.total = certs.length;
+  for (let i = 0; i < certs.length; i += 1) {
+    const r = await deliverCertificate(admin, certs[i], templates.get(String(certs[i].template)), { resend });
+    if (r.status === "limited") {
+      // The day's cap is reached: everything still waiting goes out on a later run.
+      job.limited = certs.slice(i).filter((c) => c.status === "active" && c.recipient?.email && (resend || !c.emailStatus?.sentAt)).length;
+      break;
+    }
+    if (r.status === "setup") {
+      job.error = r.error;
+      job.notSent = certs.length - i;
+      break;
+    }
+    if (r.status === "sent") job.sent += 1;
+    else if (r.status === "failed") job.failed += 1;
+    else if (r.status === "noEmail") job.noEmail += 1;
+    else if (r.status === "alreadySent") job.alreadySent += 1;
+    else if (r.status === "revoked") job.revoked += 1;
+    job.done = i + 1;
+  }
+};
+
+const startEmailJob = (admin, ids, { resend }) => {
+  const key = String(admin._id);
+  const running = activeJobByAdmin.get(key);
+  if (running && emailJobs.get(running)?.state === "running") {
+    return { error: "Certificates are already being emailed. Wait for that to finish.", jobId: running };
+  }
+  const jobId = crypto.randomBytes(8).toString("hex");
+  const job = {
+    id: jobId,
+    admin: key,
+    state: "running",
+    total: ids.length,
+    done: 0,
+    sent: 0,
+    failed: 0,
+    noEmail: 0,
+    alreadySent: 0,
+    revoked: 0,
+    limited: 0,
+    notSent: 0,
+    error: "",
+  };
+  emailJobs.set(jobId, job);
+  activeJobByAdmin.set(key, jobId);
+  runEmailJob(admin, ids, resend, job)
+    .catch((err) => {
+      console.error("[certificate] email job failed:", err.message);
+      job.error = "Something went wrong while sending. Try again.";
+    })
+    .finally(() => {
+      job.state = "done";
+      setTimeout(() => emailJobs.delete(jobId), 30 * 60 * 1000).unref?.();
+    });
+  return { jobId };
+};
+
+// Email many: the ids given, or every certificate in a batch. By default skips
+// the ones already emailed; resend = true sends them again.
+exports.emailCertificates = async (req, res) => {
+  try {
+    const b = req.body || {};
+    let ids;
+    if (b.batchId) {
+      if (!mongoose.isValidObjectId(b.batchId)) return res.status(404).json({ message: "Batch not found" });
+      const batch = await CertificateBatch.findOne({ _id: b.batchId, admin: req.user._id });
+      if (!batch) return res.status(404).json({ message: "Batch not found" });
+      ids = (await Certificate.find({ batch: batch._id, admin: req.user._id }).select("_id")).map((c) => c._id);
+    } else {
+      ids = (Array.isArray(b.ids) ? b.ids : []).filter((i) => mongoose.isValidObjectId(i));
+    }
+    if (!ids.length) return res.status(400).json({ message: "Select at least one certificate" });
+    if (ids.length > MAX_EMAIL_JOB) return res.status(400).json({ message: `Email at most ${MAX_EMAIL_JOB} certificates at a time` });
+
+    const started = startEmailJob(req.user, ids, { resend: !!b.resend });
+    if (started.error) return res.status(409).json({ message: started.error, jobId: started.jobId });
+    res.status(202).json({ jobId: started.jobId, total: ids.length });
+  } catch (err) {
+    console.error("[certificate] email start failed:", err.message);
+    res.status(500).json({ message: "Could not start emailing" });
+  }
+};
+
+exports.emailJobStatus = (req, res) => {
+  const job = emailJobs.get(String(req.params.id));
+  if (!job || job.admin !== String(req.user._id)) return res.status(404).json({ message: "Job not found" });
+  const { admin, ...rest } = job;
+  res.json({ job: rest });
+};
+
+// Email one certificate right now (also used to send it again).
+exports.emailOne = async (req, res) => {
+  try {
+    const c = await ownCertificate(req);
+    if (!c) return res.status(404).json({ message: "Certificate not found" });
+    const template = await CertificateTemplate.findById(c.template);
+    const r = await deliverCertificate(req.user, c, template, { resend: true });
+    const fresh = await Certificate.findById(c._id).populate("template", "name").populate("batch", "name");
+    switch (r.status) {
+      case "sent":
+        return res.json({ certificate: shapeCert(fresh) });
+      case "noEmail":
+        return res.status(400).json({ message: "This person has no email address" });
+      case "revoked":
+        return res.status(400).json({ message: "A revoked certificate can't be emailed" });
+      case "limited":
+        return res.status(429).json({ message: "Today's email limit is reached. Try again tomorrow." });
+      case "setup":
+        return res.status(400).json({ message: "Set up your sender email in Settings first." });
+      default:
+        return res.status(502).json({ message: r.error || "Could not send the email" });
+    }
+  } catch (err) {
+    console.error("[certificate] email one failed:", err.message);
+    res.status(500).json({ message: "Could not send the email" });
   }
 };

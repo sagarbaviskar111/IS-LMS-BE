@@ -7,6 +7,7 @@ const router = express.Router();
 
 // Public: anyone who scans the QR code can check a certificate is genuine.
 router.get("/verify/:code", c.verify);
+router.get("/verify/:code/pdf", c.verifyPdf);
 
 router.use(protect, authorize("admin"));
 
@@ -20,6 +21,11 @@ router.post("/templates/:id/preview", c.previewTemplate);
 router.post("/issue", c.issue);
 router.post("/issue-sheet", c.issueFromSheet);
 router.post("/pdf", c.pdfMany);
+router.get("/batches", c.listBatches);
+router.post("/qr", c.setQr);
+router.post("/email", c.emailCertificates);
+router.get("/email-jobs/:id", c.emailJobStatus);
+router.post("/:id/email", c.emailOne);
 router.get("/", c.listCertificates);
 router.get("/:id/pdf", c.pdfOne);
 router.patch("/:id/revoke", c.revoke);

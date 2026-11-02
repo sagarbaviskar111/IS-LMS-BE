@@ -1,4 +1,5 @@
 const express = require("express");
+const leadStudent = require("../controllers/leadStudentController");
 const {
   createLead,
   listLeads,
@@ -30,6 +31,9 @@ router.post("/invalid/delete", deleteInvalidLeads);
 router.get("/:id", getLead);
 router.patch("/:id/assign", reassignLead);
 router.post("/:id/register", registerLead);
+router.post("/:id/register-student", leadStudent.admin.registerLeadStudent);
+router.get("/:id/enrollment", leadStudent.admin.getLeadEnrollment);
+router.post("/:id/enrollment-link", leadStudent.admin.createLeadEnrollmentLink);
 router.post("/:id/registration-link", generateRegistrationLink);
 
 module.exports = router;

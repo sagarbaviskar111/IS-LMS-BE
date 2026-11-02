@@ -7,6 +7,7 @@ const {
   listMaterials,
   myPayments,
   payNextInstallment,
+  createNextInstallmentOrder,
 } = require("../controllers/studentController");
 const { listExams, getExam, submitExam, getResult } = require("../controllers/studentExamController");
 const { listAssignments, submitAssignment } = require("../controllers/studentAssignmentController");
@@ -35,6 +36,7 @@ router.get("/attendance", myAttendance);
 router.get("/classmates", classmates);
 router.get("/materials", listMaterials);
 router.get("/payments", myPayments);
+router.post("/payments/next-installment/order", createNextInstallmentOrder);
 router.post("/payments/next-installment", payNextInstallment);
 router.get("/payments/:id/receipt", studentReceipt);
 router.get("/registration", myRegistration);

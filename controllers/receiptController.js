@@ -26,7 +26,7 @@ const buildReceipt = async (payment) => {
     note: payment.note || "",
     transactionId: payment.razorpayPaymentId || "",
     receivedBy: recordedBy ? `${recordedBy.name} (${recordedBy.role})` : "Online payment",
-    student: { name: student?.name || "", email: student?.email || "", phone: student?.phone || "" },
+    student: { name: student?.name || payment.studentName || "", email: student?.email || "", phone: student?.phone || "" },
     course: course?.name || "",
     institute: shapeInstitute(admin) || { name: admin?.name || "", slug: "", logoUrl: null },
   };

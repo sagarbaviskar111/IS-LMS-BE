@@ -3,6 +3,8 @@ const User = require("../models/User");
 const { uploadFile, deleteFile, resolveResourceType, getFileUrl } = require("../utils/cloudinary");
 const { slugify, RESERVED_SLUGS } = require("../utils/slug");
 const { shapeInstitute } = require("../utils/institute");
+const { encrypt } = require("../utils/crypto");
+const { KEY_ID_PATTERN, testKeys } = require("../utils/gateway");
 
 const HEX_COLOR = /^#[0-9a-fA-F]{6}$/;
 
@@ -110,6 +112,60 @@ exports.updateBranding = async (req, res) => {
     res.json({ institute: ownBranding(admin) });
   } catch (err) {
     if (req.file) fs.unlink(req.file.path, () => {});
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// ---- Razorpay (each institute's own account) ----
+
+const razorpayView = (admin) => {
+  const keyId = admin.razorpay?.keyId || null;
+  return {
+    configured: !!keyId,
+    keyId,
+    mode: keyId ? (keyId.startsWith("rzp_test_") ? "test" : "live") : null,
+    connectedAt: admin.razorpay?.connectedAt || null,
+  };
+};
+
+exports.getRazorpaySettings = async (req, res) => {
+  try {
+    const admin = await User.findById(req.user._id).select("razorpay.keyId razorpay.connectedAt");
+    res.json({ razorpay: razorpayView(admin) });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.saveRazorpaySettings = async (req, res) => {
+  try {
+    const keyId = String(req.body?.keyId || "").trim();
+    const keySecret = String(req.body?.keySecret || "").trim();
+    if (!KEY_ID_PATTERN.test(keyId)) {
+      return res.status(400).json({ message: "Enter your Razorpay Key ID (it starts with rzp_test_ or rzp_live_)" });
+    }
+    if (keySecret.length < 10 || keySecret.length > 80 || /\s/.test(keySecret)) {
+      return res.status(400).json({ message: "Enter your Razorpay Key Secret" });
+    }
+    const problem = await testKeys(keyId, keySecret);
+    if (problem) return res.status(400).json({ message: problem });
+
+    const admin = await User.findById(req.user._id);
+    admin.razorpay = { keyId, keySecret: encrypt(keySecret), connectedAt: new Date() };
+    await admin.save();
+    res.json({ razorpay: razorpayView(admin) });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.removeRazorpaySettings = async (req, res) => {
+  try {
+    const admin = await User.findById(req.user._id);
+    admin.razorpay = { keyId: null, keySecret: null, connectedAt: null };
+    await admin.save();
+    res.json({ razorpay: razorpayView(admin) });
+  } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
 };

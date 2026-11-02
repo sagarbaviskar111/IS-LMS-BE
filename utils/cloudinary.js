@@ -35,4 +35,55 @@ const getFileUrl = (publicId, resourceType) => {
   });
 };
 
-module.exports = { cloudinary, uploadFile, deleteFile, resolveResourceType, getFileUrl };
+// ---- private verification documents (ID proofs, selfie, signature) ---------
+// Stored as "authenticated" assets: no public URL exists, so they can only be
+// read through a short-lived signed link that the server creates for the owning
+// admin. Photos are shrunk (max 1600px, auto quality) as part of the upload;
+// PDFs are stored as they are.
+const uploadPrivate = async (filePath, { folder, mimetype, imageFormat = "jpg" }) => {
+  const isImage = String(mimetype || "").startsWith("image/");
+  const result = await cloudinary.uploader.upload(filePath, {
+    folder,
+    type: "authenticated",
+    resource_type: isImage ? "image" : "raw",
+    ...(isImage
+      ? {
+          format: imageFormat,
+          transformation: [{ width: 1600, height: 1600, crop: "limit", quality: "auto:good" }],
+        }
+      : {}),
+  });
+  return {
+    cloudinaryPublicId: result.public_id,
+    cloudinaryResourceType: result.resource_type,
+    format: isImage ? imageFormat : null,
+    bytes: result.bytes,
+    mimetype: isImage ? `image/${imageFormat === "jpg" ? "jpeg" : imageFormat}` : mimetype,
+  };
+};
+
+const deletePrivate = (publicId, resourceType) => {
+  if (!publicId) return Promise.resolve();
+  return cloudinary.uploader
+    .destroy(publicId, { resource_type: resourceType || "raw", type: "authenticated" })
+    .catch(() => {});
+};
+
+// A signed link that works for a few minutes, never stored.
+const getPrivateFileUrl = (publicId, resourceType, format) =>
+  cloudinary.utils.private_download_url(publicId, format || null, {
+    resource_type: resourceType || "raw",
+    type: "authenticated",
+    expires_at: Math.floor(Date.now() / 1000) + 300,
+  });
+
+module.exports = {
+  cloudinary,
+  uploadFile,
+  deleteFile,
+  resolveResourceType,
+  getFileUrl,
+  uploadPrivate,
+  deletePrivate,
+  getPrivateFileUrl,
+};

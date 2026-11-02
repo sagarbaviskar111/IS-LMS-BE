@@ -9,7 +9,7 @@ const mongoose = require("mongoose");
 const { searchRegex, pickSort, CASE_INSENSITIVE } = require("../utils/listQuery");
 const { DAY_MS } = require("../utils/paymentCycle");
 const { generateUniqueSlug } = require("../utils/slug");
-const { saveEmailCredentials } = require("../utils/email");
+const { saveEmailCredentials, sentToday, DAILY_REMINDER_LIMIT } = require("../utils/email");
 
 // PUBLIC_API_URL (e.g. https://api.example.com, or an ngrok URL while testing
 // locally) wins over the request's own host: external senders like Google
@@ -469,6 +469,8 @@ exports.getEmailSettings = async (req, res) => {
   res.json({
     address: req.user.emailSender?.address || null,
     hasCredentials: !!req.user.emailSender?.address,
+    sentToday: sentToday(req.user),
+    reminderLimit: DAILY_REMINDER_LIMIT,
   });
 };
 

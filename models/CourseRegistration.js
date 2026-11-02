@@ -1,11 +1,16 @@
 const mongoose = require("mongoose");
 
 // Everything a student submitted through a course's registration link.
-// Files live on disk under uploads/registrations and are only ever served
-// to the owning admin (never publicly).
+// Files are kept as private (authenticated) Cloudinary assets and are only ever
+// served to the owning admin. Older registrations still point at a file under
+// uploads/registrations (`filename`), which is read from disk until migrated.
 const fileSchema = new mongoose.Schema(
   {
-    filename: { type: String, required: true },
+    filename: { type: String, default: null },
+    cloudinaryPublicId: { type: String, default: null },
+    cloudinaryResourceType: { type: String, default: null },
+    format: { type: String, default: null },
+    bytes: { type: Number, default: 0 },
     mimetype: { type: String, default: "" },
     originalName: { type: String, default: "" },
     // What this document is (Aadhaar, PAN...) — set for ID proofs.

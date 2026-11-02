@@ -7,6 +7,8 @@ const Session = require("../models/Session");
 const Attendance = require("../models/Attendance");
 const User = require("../models/User");
 const Payment = require("../models/Payment");
+const { paymentMode } = require("../utils/gateway");
+const { openStudentOrder, payStudentOrder, alreadyRecorded, publicPayment, respondError, cycleDaysOf } = require("../utils/paymentOrders");
 const paginate = require("../utils/paginate");
 const { withFileUrl } = require("../utils/fileUrlView");
 const { attachPlaybackUrls } = require("../utils/objectStorage");
@@ -110,52 +112,28 @@ exports.classmates = async (req, res) => {
   }
 };
 
-// Days the next due date moves out when an installment is paid early.
-const cycleDaysOf = async (student) => {
-  const batch = student.batch ? await Batch.findById(student.batch).select("paymentCycleDays") : null;
-  return batch?.paymentCycleDays || 30;
+// Pays the next installment ahead of time: records the payment and pushes the
+// due date out by one cycle. Only allowed once the current balance is clear.
+// Step one: an order on the institute's own Razorpay account.
+exports.createNextInstallmentOrder = async (req, res) => {
+  try {
+    res.json(await openStudentOrder(req.user, "next_installment"));
+  } catch (err) {
+    respondError(res, err, "Could not start the payment");
+  }
 };
 
 // Pays the next installment ahead of time: records the payment and pushes the
 // due date out by one cycle. Only allowed once the current balance is clear.
 exports.payNextInstallment = async (req, res) => {
   try {
-    const student = req.user;
-    if (hasSchedule(student)) {
-      return res.status(400).json({ message: "Your installments follow a fixed schedule — pay the current one above" });
-    }
-    if (!(student.installmentAmount > 0) || !student.nextDueDate) {
-      return res.status(400).json({ message: "You have no upcoming installment" });
-    }
-    if (student.balanceDue > 0) {
-      return res.status(400).json({ message: "Clear your current balance due first" });
-    }
-    // Never take more than what's left of the course fee.
-    const feeStatus = await getFeeStatus(student);
-    if (feeStatus && feeStatus.remaining <= 0) {
-      return res.status(400).json({ message: "Your course fees are already fully paid" });
-    }
-    const amount = feeStatus ? Math.min(student.installmentAmount, feeStatus.remaining) : student.installmentAmount;
-
-    student.nextDueDate = new Date(student.nextDueDate.getTime() + (await cycleDaysOf(student)) * DAY_MS);
-    student.paymentGraceUntil = null;
-    student.lastFeeReminderAt = null;
-    await student.save();
-
-    await Payment.create({
-      student: student._id,
-      admin: student.admin,
-      batch: student.batch || null,
-      amount,
-      method: "online",
-      status: "paid",
-      note: "Next installment paid in advance",
-    });
-    await closeOutIfFullyPaid(student);
-
-    res.json({ nextDueDate: student.nextDueDate });
+    const proof = req.body?.razorpay;
+    const done = await alreadyRecorded(req.user, "next_installment", proof?.orderId);
+    const { order, payment } = done || (await payStudentOrder(req.user, "next_installment", proof));
+    const student = await User.findById(req.user._id).select("nextDueDate");
+    res.json({ nextDueDate: student?.nextDueDate, payment: publicPayment(payment), excess: order.excess || 0 });
   } catch (err) {
-    res.status(500).json({ message: "Server error" });
+    respondError(res, err);
   }
 };
 
@@ -178,6 +156,8 @@ exports.myPayments = async (req, res) => {
         feeStatus: await getFeeStatus(req.user),
         schedule: publicSchedule(req.user),
         paymentDeadline: paymentDeadline(req.user),
+        // False only where online payment isn't available at all (production, no Razorpay keys).
+        onlinePayment: (await paymentMode(req.user.admin)).mode !== "none",
         nextInstallmentDueDate:
           !hasSchedule(req.user) && req.user.nextDueDate && req.user.installmentAmount > 0
             ? new Date(req.user.nextDueDate.getTime() + (await cycleDaysOf(req.user)) * DAY_MS)

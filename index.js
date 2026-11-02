@@ -32,7 +32,8 @@ const portfolioRoutes = require("./routes/portfolioRoutes");
 const inquiryFormRoutes = require("./routes/inquiryFormRoutes");
 const User = require("./models/User");
 const { runPaymentCycleCheck } = require("./utils/paymentCycle");
-const { sendWhatsApp } = require("./utils/whatsapp");
+const { reconcileOrders } = require("./utils/paymentOrders");
+const { sendFeeReminderEmail } = require("./utils/email");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -117,7 +118,7 @@ server.headersTimeout = server.requestTimeout + 5000;
 // Deactivates students whose payment cycle lapsed unpaid, and rolls forward
 // the cycle for anyone caught up. Runs on boot, then every 15 minutes.
 const runCycleJob = () => {
-  runPaymentCycleCheck(User, sendWhatsApp)
+  runPaymentCycleCheck(User, sendFeeReminderEmail)
     .then(({ deactivated, rolledOver, reminded, checked }) => {
       if (deactivated || rolledOver || reminded) {
         console.log(
@@ -127,5 +128,17 @@ const runCycleJob = () => {
     })
     .catch((err) => console.error("[payment-cycle] job failed:", err.message));
 };
+// Records online payments whose browser never reported back (closed tab, lost
+// network), so a student who paid is never left unrecorded.
+const runReconcileJob = () => {
+  reconcileOrders()
+    .then(({ settled }) => {
+      if (settled) console.log(`[payment-orders] recorded ${settled} online payment(s) the browser never confirmed`);
+    })
+    .catch((err) => console.error("[payment-orders] job failed:", err.message));
+};
+setInterval(runReconcileJob, 5 * 60 * 1000);
+setTimeout(runReconcileJob, 20000);
+
 setInterval(runCycleJob, 15 * 60 * 1000);
 setTimeout(runCycleJob, 5000);

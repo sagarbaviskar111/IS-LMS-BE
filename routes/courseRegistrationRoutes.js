@@ -1,11 +1,16 @@
 const express = require("express");
-const { getRegistrationInfo, submitRegistration } = require("../controllers/courseRegistrationController");
+const {
+  getRegistrationInfo,
+  submitRegistration,
+  createRegistrationOrder,
+} = require("../controllers/courseRegistrationController");
 const { registrationUpload } = require("../utils/upload");
 
 const router = express.Router();
 
 // Public — a student opens this from the link the admin shares.
 router.get("/:token", getRegistrationInfo);
+router.post("/:token/payment-order", createRegistrationOrder);
 router.post(
   "/:token",
   registrationUpload.fields([
