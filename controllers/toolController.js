@@ -1,5 +1,17 @@
 const Tool = require("../models/Tool");
 const paginate = require("../utils/paginate");
+const { searchRegex, pickSort, CASE_INSENSITIVE } = require("../utils/listQuery");
+
+const TOOL_SORTS = { newest: { createdAt: -1, _id: -1 }, oldest: { createdAt: 1, _id: 1 }, name: { name: 1, _id: 1 } };
+
+// Tools are listed A-Z by default; ?q= searches name/url, ?sort= reorders.
+const toolList = (base, req) => {
+  const filter = { ...base };
+  const rx = searchRegex(req.query.q);
+  if (rx) filter.$or = [{ name: rx }, { url: rx }];
+  const sort = pickSort(req.query.sort, TOOL_SORTS, "name");
+  return { filter, sort };
+};
 
 const isValidUrl = (url) => /^https?:\/\/.+/i.test(url.trim());
 
@@ -26,9 +38,9 @@ exports.createTool = async (req, res) => {
 exports.listTools = async (req, res) => {
   try {
     const { page, limit, skip } = paginate(req);
-    const filter = { admin: req.user._id };
+    const { filter, sort } = toolList({ admin: req.user._id }, req);
     const [tools, total] = await Promise.all([
-      Tool.find(filter).sort({ name: 1 }).skip(skip).limit(limit),
+      Tool.find(filter).collation(CASE_INSENSITIVE).sort(sort).skip(skip).limit(limit),
       Tool.countDocuments(filter),
     ]);
     res.json({ tools, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
@@ -78,9 +90,9 @@ exports.deleteTool = async (req, res) => {
 exports.listMyInstituteTools = async (req, res) => {
   try {
     const { page, limit, skip } = paginate(req);
-    const filter = { admin: req.user.admin };
+    const { filter, sort } = toolList({ admin: req.user.admin }, req);
     const [tools, total] = await Promise.all([
-      Tool.find(filter).sort({ name: 1 }).skip(skip).limit(limit),
+      Tool.find(filter).collation(CASE_INSENSITIVE).sort(sort).skip(skip).limit(limit),
       Tool.countDocuments(filter),
     ]);
     res.json({ tools, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });

@@ -3,6 +3,7 @@ const FinanceEntry = require("../models/FinanceEntry");
 const Payment = require("../models/Payment");
 const User = require("../models/User");
 const paginate = require("../utils/paginate");
+const { pickSort } = require("../utils/listQuery");
 
 const round2 = (n) => Math.round(n * 100) / 100;
 const METHODS = ["cash", "upi", "bank", "card", "cheque", "other"];
@@ -58,6 +59,13 @@ const ledgerBase = (adminId) => [
   },
 ];
 
+const LEDGER_SORTS = {
+  newest: { date: -1, _id: -1 },
+  oldest: { date: 1, _id: 1 },
+  amount_desc: { amount: -1, _id: -1 },
+  amount_asc: { amount: 1, _id: 1 },
+};
+
 const filterStage = (q) => {
   const match = {};
   if (q.type === "credit" || q.type === "debit") match.type = q.type;
@@ -83,7 +91,7 @@ exports.listEntries = async (req, res) => {
     const [out] = await FinanceEntry.aggregate([
       ...ledgerBase(req.user._id),
       filterStage(req.query),
-      { $sort: { date: -1, _id: -1 } },
+      { $sort: pickSort(req.query.sort, LEDGER_SORTS, "newest") },
       { $facet: { rows: [{ $skip: skip }, { $limit: limit }], count: [{ $count: "n" }] } },
     ]);
     const total = out.count[0]?.n || 0;
@@ -239,7 +247,7 @@ exports.exportCsv = async (req, res) => {
     const rows = await FinanceEntry.aggregate([
       ...ledgerBase(req.user._id),
       filterStage(req.query),
-      { $sort: { date: -1, _id: -1 } },
+      { $sort: pickSort(req.query.sort, LEDGER_SORTS, "newest") },
       { $limit: 10000 },
     ]);
     const lines = [["Date", "Type", "Category", "Title", "Method", "Credit", "Debit", "Note", "Source"].join(",")];
