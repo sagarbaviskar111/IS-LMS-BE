@@ -10,6 +10,7 @@ const fontkit = require("@pdf-lib/fontkit");
 const { getFileUrl } = require("./cloudinary");
 
 const FONT_DIR = path.join(__dirname, "..", "assets", "fonts");
+const PAGE_MARGIN = 0.02; // text stays at least 2% of the page width away from the edges
 const PAGE_LONG_SIDE = 842; // A4 landscape width in pt; portrait uses the same long side
 
 const STANDARD = {
@@ -125,12 +126,19 @@ const drawCertificate = async (doc, fonts, template, imageBytes, { values, certi
     let size = (field.fontSize / 100) * W;
     const font = await fonts.safe(field, text);
     let width = font.widthOfTextAtSize(text, size);
-    const limit = field.maxWidth > 0 ? (field.maxWidth / 100) * W : 0;
-    if (limit && width > limit) {
+    // The text must stay inside its box: "max width" wide around the point (centred),
+    // after it (left) or before it (right), and never closer than a small margin to
+    // the page edge. Longer text is made smaller instead of running past the end.
+    const margin = W * PAGE_MARGIN;
+    const ax = Math.min(W - margin, Math.max(margin, (field.x / 100) * W));
+    const room =
+      field.align === "left" ? W - margin - ax : field.align === "right" ? ax - margin : 2 * Math.min(ax - margin, W - margin - ax);
+    const asked = field.maxWidth > 0 ? (field.maxWidth / 100) * W : Infinity;
+    const limit = Math.max(1, Math.min(asked, room));
+    if (width > limit) {
       size = size * (limit / width);
       width = limit;
     }
-    const ax = (field.x / 100) * W;
     const x = field.align === "left" ? ax : field.align === "right" ? ax - width : ax - width / 2;
     // y is the vertical centre of the text line.
     const cy = H - (field.y / 100) * H;

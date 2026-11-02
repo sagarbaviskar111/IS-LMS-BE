@@ -169,7 +169,7 @@ exports.createTemplate = async (req, res) => {
       },
       // A sensible starting layout so the editor never opens empty.
       fields: [
-        { key: "student_name", x: 50, y: 48, fontSize: 4.5, maxWidth: 70, font: "times", bold: true, align: "center" },
+        { key: "student_name", x: 50, y: 48, fontSize: 4.5, maxWidth: 40, font: "times", bold: true, align: "center" },
         { key: "course", x: 50, y: 62, fontSize: 2.4, maxWidth: 70, align: "center" },
         { key: "date", x: 20, y: 85, fontSize: 1.8, align: "center" },
         { key: "certificate_no", x: 50, y: 92, fontSize: 1.5, align: "center" },
