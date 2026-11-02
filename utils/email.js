@@ -73,9 +73,32 @@ const sendPasswordResetEmail = async (adminId, to, resetUrl) => {
 const escapeHtml = (s) =>
   String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 
+// Gmail's raw SMTP errors are long and confusing; say what to do instead.
+const friendlyMailError = (err) => {
+  const text = String(err?.message || "");
+  if (err?.code === "EAUTH" || err?.responseCode === 535 || /535|Invalid login|BadCredentials/i.test(text)) {
+    return {
+      auth: true,
+      reason:
+        "Gmail rejected your sender email's App Password. Open Settings → Sender email and save a new 16-character App Password (2-Step Verification must be on).",
+    };
+  }
+  if (/5\.4\.5|daily user sending|sending limit/i.test(text)) {
+    return { reason: "Gmail's daily sending limit for this account is used up. Try again tomorrow." };
+  }
+  if (["ECONNECTION", "ETIMEDOUT", "ESOCKET", "EDNS"].includes(err?.code)) {
+    return { reason: "Could not reach Gmail right now. Try again in a few minutes." };
+  }
+  if (err?.responseCode === 550 || err?.responseCode === 553 || /recipient|user unknown|mailbox/i.test(text)) {
+    return { reason: "Gmail refused this recipient address. Check that the email address is correct." };
+  }
+  return { reason: text.split("\n")[0].slice(0, 200) || "Could not send the email" };
+};
+
 // One mail from the institute's own Gmail, counted against the day's 90-mail cap
 // (the other 10 stay free for password resets). Never throws: it returns
-// { sent } or { sent: false, limited?, reason } so a bulk job keeps going.
+// { sent } or { sent: false, limited?, setup?, reason } so a bulk job keeps going.
+// setup = the sender account itself is the problem (missing or wrong App Password).
 const sendInstituteMail = async (adminId, { to, subject, text, html, attachments }) => {
   try {
     const { address, appPassword } = await getSenderForAdmin(adminId);
@@ -91,10 +114,12 @@ const sendInstituteMail = async (adminId, { to, subject, text, html, attachments
     } catch (err) {
       // The mail did not go out, so it should not use up one of today's slots.
       await releaseEmailSlot(adminId).catch(() => {});
-      return { sent: false, reason: err.message };
+      const f = friendlyMailError(err);
+      // setup = the problem is the sender account itself, so retrying other mails is pointless.
+      return { sent: false, reason: f.reason, setup: !!f.auth };
     }
   } catch (err) {
-    return { sent: false, reason: err.message };
+    return { sent: false, reason: err.message, setup: /sender email yet/.test(err.message) };
   }
 };
 
@@ -118,6 +143,21 @@ const sendFeeReminderEmail = async (student, { subject, text }) => {
     `,
   });
 };
+
+// A short "it works" mail to the account owner, so they can see the setup is right.
+const sendTestEmail = async (adminId, to) =>
+  sendInstituteMail(adminId, {
+    to,
+    subject: "Your sender email is working",
+    text: "This is a test email from InstituteSathi. Your sender email is set up correctly: fee reminders, certificates and password-reset links will now go out from this address.",
+    html: `
+      <div style="font-family: sans-serif; max-width: 480px; margin: 0 auto;">
+        <h2 style="margin-bottom: 8px;">It works!</h2>
+        <p>This is a test email from InstituteSathi. Your sender email is set up correctly.</p>
+        <p>Fee reminders, certificates and password-reset links will now go out from this address.</p>
+      </div>
+    `,
+  });
 
 // A certificate PDF sent to the person it was issued to.
 const sendCertificateEmail = async (adminId, { to, name, instituteName, course, certificateNo, verifyUrl, pdf, filename }) => {
@@ -153,11 +193,31 @@ const sendCertificateEmail = async (adminId, { to, name, instituteName, course, 
   });
 };
 
+// Checks that Gmail accepts this address + App Password before it is saved.
+// Only a real login rejection blocks saving; a network hiccup does not.
+const verifySenderCredentials = async (address, appPassword) => {
+  try {
+    await nodemailer.createTransport({ service: "gmail", auth: { user: address, pass: appPassword } }).verify();
+    return { ok: true };
+  } catch (err) {
+    const f = friendlyMailError(err);
+    return f.auth
+      ? {
+          ok: false,
+          reason:
+            "Gmail did not accept this address and password. Make sure the password is the 16-letter App Password (not your normal Gmail password) and that you created it while signed in to this same Gmail account.",
+        }
+      : { ok: true, unchecked: true };
+  }
+};
+
 module.exports = {
+  verifySenderCredentials,
   saveEmailCredentials,
   sendPasswordResetEmail,
   sendFeeReminderEmail,
   sendCertificateEmail,
+  sendTestEmail,
   DAILY_REMINDER_LIMIT,
   sentToday,
 };

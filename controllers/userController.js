@@ -9,7 +9,7 @@ const mongoose = require("mongoose");
 const { searchRegex, pickSort, CASE_INSENSITIVE } = require("../utils/listQuery");
 const { DAY_MS } = require("../utils/paymentCycle");
 const { generateUniqueSlug } = require("../utils/slug");
-const { saveEmailCredentials, sentToday, DAILY_REMINDER_LIMIT } = require("../utils/email");
+const { saveEmailCredentials, verifySenderCredentials, sendTestEmail: sendTestEmailTo, sentToday, DAILY_REMINDER_LIMIT } = require("../utils/email");
 
 // PUBLIC_API_URL (e.g. https://api.example.com, or an ngrok URL while testing
 // locally) wins over the request's own host: external senders like Google
@@ -480,8 +480,27 @@ exports.updateEmailSettings = async (req, res) => {
     if (!address || !appPassword) {
       return res.status(400).json({ message: "address and appPassword are required" });
     }
-    await saveEmailCredentials(req.user._id, String(address).trim().toLowerCase(), String(appPassword).trim());
+    // Google shows the App Password as four groups with spaces; the spaces are not part of it.
+    const cleanAddress = String(address).trim().toLowerCase();
+    const cleanPassword = String(appPassword).replace(/\s+/g, "");
+    const check = await verifySenderCredentials(cleanAddress, cleanPassword);
+    if (!check.ok) return res.status(400).json({ message: check.reason });
+    await saveEmailCredentials(req.user._id, cleanAddress, cleanPassword);
     res.json({ message: "Sender email saved." });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+// Sends a test mail to the logged-in admin so they can confirm the sender works.
+exports.sendTestEmail = async (req, res) => {
+  try {
+    if (!req.user.emailSender?.address) {
+      return res.status(400).json({ message: "Save your sender email first." });
+    }
+    const r = await sendTestEmailTo(req.user._id, req.user.email);
+    if (!r.sent) return res.status(r.limited ? 429 : 400).json({ message: r.limited ? "Today's email limit is reached. Try again tomorrow." : r.reason });
+    res.json({ message: `Test email sent to ${req.user.email}. Check your inbox (and spam).`, to: req.user.email });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }

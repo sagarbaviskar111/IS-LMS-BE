@@ -10,6 +10,7 @@ const {
   updateTeamSettings,
   getEmailSettings,
   updateEmailSettings,
+  sendTestEmail,
   getLeadWebhookSettings,
   regenerateLeadWebhookKey,
 } = require("../controllers/userController");
@@ -27,6 +28,7 @@ router
 // Both admin (their institute) and superadmin (their own account) send
 // password-reset email through their own Gmail sender.
 router.route("/email-settings").get(getEmailSettings).patch(updateEmailSettings);
+router.post("/email-settings/test", sendTestEmail);
 
 router.get("/lead-webhook", authorize("admin"), getLeadWebhookSettings);
 router.post("/lead-webhook/regenerate", authorize("admin"), regenerateLeadWebhookKey);

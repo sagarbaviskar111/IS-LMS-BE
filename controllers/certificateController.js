@@ -871,7 +871,7 @@ const deliverCertificate = async (admin, cert, template, { resend }) => {
     return { status: "sent" };
   }
   if (result.limited) return { status: "limited" };
-  if (/sender email yet/.test(result.reason || "")) return { status: "setup", error: result.reason };
+  if (result.setup) return { status: "setup", error: result.reason };
   await Certificate.updateOne({ _id: cert._id }, { $set: { "emailStatus.error": String(result.reason || "Could not send").slice(0, 200) } });
   return { status: "failed", error: result.reason };
 };
@@ -988,7 +988,7 @@ exports.emailOne = async (req, res) => {
       case "limited":
         return res.status(429).json({ message: "Today's email limit is reached. Try again tomorrow." });
       case "setup":
-        return res.status(400).json({ message: "Set up your sender email in Settings first." });
+        return res.status(400).json({ message: r.error || "Set up your sender email in Settings first." });
       default:
         return res.status(502).json({ message: r.error || "Could not send the email" });
     }
