@@ -1,5 +1,6 @@
 const { closeOutIfFullyPaid } = require("./feeStatus");
-const { hasSchedule, syncFromSchedule } = require("./installmentSchedule");
+const { hasSchedule, syncFromSchedule, remainingOf } = require("./installmentSchedule");
+const { DEFAULT_GRACE_DAYS, getFeeRules, rulesOf, lateFeeTarget } = require("./feeRules");
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -21,16 +22,46 @@ const ensurePaymentTermsFromBatch = (student, batch) => {
   initPaymentTerms(student, { installmentAmount: batch.defaultFee, cycleDays: batch.paymentCycleDays });
 };
 
-// Extra days after the due date before an unpaid account is deactivated.
-const FEE_GRACE_DAYS = 3;
 const REMINDER_GAP_MS = 20 * 60 * 60 * 1000;
 
-// When an unpaid account gets deactivated: the end of the 3 extra days after
-// the due date, or the admin-granted extension if that is later.
-const paymentDeadline = (student) => {
+// When an unpaid account gets deactivated: the end of the institute's extra days
+// after the due date, or the admin-granted extension if that is later.
+const paymentDeadline = (student, graceDays = DEFAULT_GRACE_DAYS) => {
   if (!student.nextDueDate) return null;
-  const base = new Date(student.nextDueDate.getTime() + FEE_GRACE_DAYS * DAY_MS);
+  const base = new Date(student.nextDueDate.getTime() + graceDays * DAY_MS);
   return student.paymentGraceUntil && student.paymentGraceUntil > base ? student.paymentGraceUntil : base;
+};
+
+// Adds today's late fee (if the institute has one) for the due date that has passed.
+// Returns true when the student was changed.
+const applyLateFee = (student, rules, now) => {
+  const due = student.nextDueDate;
+  if (!(student.balanceDue > 0) || !due || due > now) return false;
+  const sameDue = student.lateFee?.forDue && student.lateFee.forDue.getTime() === due.getTime();
+  const applied = sameDue ? student.lateFee.applied || 0 : 0;
+  const delta = Math.round((lateFeeTarget(rules, now, due) - applied) * 100) / 100;
+  if (!(delta > 0)) return false;
+
+  if (hasSchedule(student)) {
+    const item = [...student.installmentSchedule]
+      .filter((i) => remainingOf(i) > 0.005)
+      .sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate))[0];
+    if (!item) return false;
+    item.amount = Math.round((item.amount + delta) * 100) / 100;
+    item.fine = Math.round(((item.fine || 0) + delta) * 100) / 100;
+    student.markModified("installmentSchedule");
+    syncFromSchedule(student, now);
+  } else {
+    student.balanceDue = Math.round((student.balanceDue + delta) * 100) / 100;
+  }
+  student.lateFee = { forDue: due, applied: Math.round((applied + delta) * 100) / 100 };
+
+  // One ledger line per due date; a per-day fee just grows it.
+  const ref = `late:${due.getTime()}`;
+  const line = student.feeAdjustments.find((a) => a.ref === ref);
+  if (line) line.amount = Math.round((line.amount + delta) * 100) / 100;
+  else student.feeAdjustments.push({ kind: "late_fee", amount: delta, ref, note: "Late fee" });
+  return true;
 };
 
 const reminderText = (student, deadline, now) => {
@@ -40,7 +71,8 @@ const reminderText = (student, deadline, now) => {
     return `Hi ${student.name}, your fee of ₹${amount} is due on ${due}. Please pay on time to keep your account active.`;
   }
   const last = deadline.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" });
-  return `Hi ${student.name}, your fee of ₹${amount} was due on ${due}. Please pay by ${last} — after that your account will be deactivated until the dues are cleared.`;
+  const fine = student.lateFee?.applied > 0 ? ` (includes a late fee of ₹${student.lateFee.applied})` : "";
+  return `Hi ${student.name}, your fee of ₹${amount}${fine} was due on ${due}. Please pay by ${last} — after that your account will be deactivated until the dues are cleared.`;
 };
 
 // Deactivates the student right now if their unpaid-fee deadline (due date +
@@ -48,7 +80,8 @@ const reminderText = (student, deadline, now) => {
 // periodic job. Returns true if the account was just deactivated.
 const enforceFeeDeadline = async (student) => {
   if (student.role !== "student" || !student.isActive || !(student.balanceDue > 0)) return false;
-  const deadline = paymentDeadline(student);
+  const { graceDays } = await getFeeRules(student.admin);
+  const deadline = paymentDeadline(student, graceDays);
   if (!deadline || deadline > new Date()) return false;
   student.isActive = false;
   student.deactivatedForPayment = true;
@@ -75,6 +108,12 @@ const runPaymentCycleCheck = async (User, sendMessage) => {
     .sort({ nextDueDate: 1 }) // most overdue first, so they get the daily email slots
     .populate("batch", "paymentCycleDays");
 
+  // Each institute has its own grace days and late fee.
+  const rulesByAdmin = new Map();
+  for (const adminId of new Set(students.map((x) => String(x.admin)))) {
+    rulesByAdmin.set(adminId, await getFeeRules(adminId));
+  }
+
   let deactivated = 0;
   let rolledOver = 0;
   let reminded = 0;
@@ -86,9 +125,11 @@ const runPaymentCycleCheck = async (User, sendMessage) => {
       syncFromSchedule(student, now);
       if (student.isModified()) await student.save();
     }
-    const deadline = paymentDeadline(student);
+    const rules = rulesByAdmin.get(String(student.admin)) || rulesOf(null);
+    const deadline = paymentDeadline(student, rules.graceDays);
 
     if (student.balanceDue > 0) {
+      if (deadline > now && applyLateFee(student, rules, now)) await student.save();
       if (deadline <= now) {
         student.isActive = false;
         student.deactivatedForPayment = true;
@@ -131,4 +172,4 @@ const runPaymentCycleCheck = async (User, sendMessage) => {
   return { deactivated, rolledOver, reminded, checked: students.length };
 };
 
-module.exports = { initPaymentTerms, ensurePaymentTermsFromBatch, runPaymentCycleCheck, enforceFeeDeadline, paymentDeadline, FEE_GRACE_DAYS, DAY_MS };
+module.exports = { initPaymentTerms, ensurePaymentTermsFromBatch, runPaymentCycleCheck, enforceFeeDeadline, paymentDeadline, applyLateFee, DAY_MS };

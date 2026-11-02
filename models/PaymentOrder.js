@@ -14,7 +14,7 @@ const paymentOrderSchema = new mongoose.Schema(
     admin: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
     // Null for a course registration until the student account exists.
     student: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
-    purpose: { type: String, enum: ["dues", "next_installment", "course_registration"], required: true },
+    purpose: { type: String, enum: ["dues", "next_installment", "custom", "course_registration"], required: true },
     // Rupees, fixed by the server when the order is opened.
     amount: { type: Number, required: true, min: 0 },
     mode: { type: String, enum: ["gateway", "dev"], default: "gateway" },
@@ -27,6 +27,8 @@ const paymentOrderSchema = new mongoose.Schema(
       token: { type: String, default: null },
       plan: { type: String, default: null },
       email: { type: String, default: null },
+      // custom payment: the installment the student chose to pay (empty = a free amount).
+      itemId: { type: String, default: null },
     },
     paidAt: { type: Date, default: null },
     fulfilledAt: { type: Date, default: null },

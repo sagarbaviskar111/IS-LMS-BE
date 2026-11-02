@@ -5,7 +5,7 @@ const Payment = require("../models/Payment");
 const User = require("../models/User");
 const Batch = require("../models/Batch");
 const { NO_GATEWAY_MESSAGE, getGateway, paymentMode, createOrder, verifyPayment, fetchCapturedPayment } = require("./gateway");
-const { hasSchedule, applyPayment, isCaughtUp } = require("./installmentSchedule");
+const { hasSchedule, applyPayment, applyToItem, isCaughtUp, remainingOf, totalRemaining } = require("./installmentSchedule");
 const { getFeeStatus, closeOutIfFullyPaid } = require("./feeStatus");
 const { notifyUsers } = require("./notify");
 
@@ -46,24 +46,49 @@ const nextInstallmentQuote = async (student) => {
   return { amount: round2(amount) };
 };
 
-const quoteFor = async (student, purpose) => (purpose === "dues" ? duesQuote(student) : nextInstallmentQuote(student));
+// A part payment: the student picks an amount, and optionally which installment it is for.
+const customQuote = (student, { amount, itemId } = {}) => {
+  const amt = round2(Number(amount));
+  if (!Number.isFinite(amt) || amt < 1) return { error: "Enter an amount of at least ₹1" };
+  if (hasSchedule(student)) {
+    if (itemId) {
+      const item = student.installmentSchedule.id(itemId);
+      if (!item) return { error: "That installment was not found" };
+      const left = remainingOf(item);
+      if (!(left > 0)) return { error: "That installment is already paid" };
+      if (amt > left + 0.005) return { error: `That installment needs at most ₹${left}` };
+      return { amount: amt, itemId: String(item._id) };
+    }
+    const total = totalRemaining(student);
+    if (!(total > 0)) return { error: "You have no fees left to pay" };
+    if (amt > total + 0.005) return { error: `You only owe ₹${total} in total` };
+    return { amount: amt };
+  }
+  if (!(student.balanceDue > 0)) return { error: "You have no dues right now. To pay ahead, use the next installment option." };
+  if (amt > student.balanceDue + 0.005) return { error: `You owe ₹${round2(student.balanceDue)} right now` };
+  return { amount: amt };
+};
+
+const quoteFor = async (student, purpose, opts) =>
+  purpose === "dues" ? duesQuote(student) : purpose === "custom" ? customQuote(student, opts) : nextInstallmentQuote(student);
 
 // ---- opening an order -------------------------------------------------------
 
 // Step one for dues / next-installment payments. Returns what the browser needs
 // to open Razorpay, or { mode: "dev" } on a development machine without keys.
-const openStudentOrder = async (student, purpose) => {
-  const quote = await quoteFor(student, purpose);
+const openStudentOrder = async (student, purpose, opts) => {
+  const quote = await quoteFor(student, purpose, opts);
   if (quote.error) throw fail(400, quote.error);
 
   const pm = await paymentMode(student.admin);
   if (pm.mode === "none") throw fail(400, NO_GATEWAY_MESSAGE);
   if (pm.mode === "dev") return { mode: "dev", amount: quote.amount };
+  const itemNote = quote.itemId ? { itemId: quote.itemId } : {};
 
   const order = await createOrder(pm.gateway, {
     amount: quote.amount,
-    receipt: `${purpose === "dues" ? "dues" : "next"}_${student._id}`,
-    notes: { purpose, studentId: String(student._id) },
+    receipt: `${purpose === "dues" ? "dues" : purpose === "custom" ? "part" : "next"}_${student._id}`,
+    notes: { purpose, studentId: String(student._id), ...itemNote },
   });
   await PaymentOrder.create({
     admin: student.admin,
@@ -71,11 +96,30 @@ const openStudentOrder = async (student, purpose) => {
     purpose,
     amount: quote.amount,
     razorpayOrderId: order.orderId,
+    meta: { itemId: quote.itemId || null },
   });
   return { mode: "gateway", ...order, name: student.name, email: student.email };
 };
 
 // ---- recording a paid order -------------------------------------------------
+
+// Blocked only for unpaid fees and now caught up: open the account again.
+const reopenIfCaughtUp = (student) => {
+  if (student.deactivatedForPayment && isCaughtUp(student)) {
+    student.isActive = true;
+    student.deactivatedForPayment = false;
+    student.deactivationMessage = null;
+  }
+};
+
+// A part payment, on the installment the student chose or spread from the earliest.
+const applyCustom = (student, amount, itemId) => {
+  const item = itemId && hasSchedule(student) ? student.installmentSchedule.id(itemId) : null;
+  if (!item) return applyDues(student, amount);
+  const left = applyToItem(student, item, amount);
+  reopenIfCaughtUp(student);
+  return left;
+};
 
 const applyDues = (student, amount) => {
   let left;
@@ -88,12 +132,7 @@ const applyDues = (student, amount) => {
     left = Math.max(0, round2(amount - before));
     if (!(student.balanceDue > 0)) student.paymentGraceUntil = null;
   }
-  // Blocked only for unpaid fees and now caught up: open the account again.
-  if (student.deactivatedForPayment && isCaughtUp(student)) {
-    student.isActive = true;
-    student.deactivatedForPayment = false;
-    student.deactivationMessage = null;
-  }
+  reopenIfCaughtUp(student);
   return left;
 };
 
@@ -123,7 +162,12 @@ const fulfilStudentOrder = async (order) => {
         return;
       }
       const student = await User.findById(fresh.student).session(session);
-      const left = fresh.purpose === "dues" ? applyDues(student, fresh.amount) : applyNext(student, fresh.amount, cycleDays);
+      const left =
+        fresh.purpose === "dues"
+          ? applyDues(student, fresh.amount)
+          : fresh.purpose === "custom"
+          ? applyCustom(student, fresh.amount, fresh.meta?.itemId)
+          : applyNext(student, fresh.amount, cycleDays);
       await student.save({ session });
 
       const gateway = fresh.mode === "gateway";
@@ -136,7 +180,7 @@ const fulfilStudentOrder = async (order) => {
             amount: fresh.amount,
             method: gateway ? "razorpay" : "online",
             status: "paid",
-            note: fresh.purpose === "dues" ? "Online payment" : "Next installment paid in advance",
+            note: fresh.purpose === "dues" ? "Online payment" : fresh.purpose === "custom" ? "Online part payment" : "Next installment paid in advance",
             ...(gateway ? { razorpayOrderId: fresh.razorpayOrderId, razorpayPaymentId: fresh.razorpayPaymentId } : {}),
           },
         ],
@@ -170,12 +214,12 @@ const announce = async (order, payment, student) => {
 // ---- the browser says "paid": check it and record it ------------------------
 
 // proof = { orderId, paymentId, signature } from Razorpay checkout (absent in dev mode).
-const payStudentOrder = async (student, purpose, proof) => {
+const payStudentOrder = async (student, purpose, proof, opts) => {
   const pm = await paymentMode(student.admin);
   if (pm.mode === "none") throw fail(400, NO_GATEWAY_MESSAGE);
 
   if (pm.mode === "dev") {
-    const quote = await quoteFor(student, purpose);
+    const quote = await quoteFor(student, purpose, opts);
     if (quote.error) throw fail(400, quote.error);
     const order = await PaymentOrder.create({
       admin: student.admin,
@@ -183,6 +227,7 @@ const payStudentOrder = async (student, purpose, proof) => {
       purpose,
       amount: quote.amount,
       mode: "dev",
+      meta: { itemId: quote.itemId || null },
       razorpayOrderId: `dev_${crypto.randomBytes(8).toString("hex")}`,
       status: "paid",
       paidAt: new Date(),
@@ -200,7 +245,7 @@ const payStudentOrder = async (student, purpose, proof) => {
       paymentId: proof.paymentId,
       signature: proof.signature,
       amount: order.amount,
-      notes: { purpose, studentId: String(student._id) },
+      notes: { purpose, studentId: String(student._id), ...(order.meta?.itemId ? { itemId: order.meta.itemId } : {}) },
     });
     if (problem) {
       // The background check may have recorded this very payment a moment ago.
@@ -352,7 +397,7 @@ const reconcileOrders = async () => {
   // Paid but a step failed earlier: try recording again.
   const stuck = await PaymentOrder.find({
     status: "paid",
-    purpose: { $in: ["dues", "next_installment"] },
+    purpose: { $in: ["dues", "next_installment", "custom"] },
     paidAt: { $lt: new Date(now - 60 * 1000) },
   }).limit(50);
   for (const order of stuck) {

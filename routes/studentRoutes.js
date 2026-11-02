@@ -6,6 +6,8 @@ const {
   classmates,
   listMaterials,
   myPayments,
+  createCustomOrder,
+  payCustom,
   payNextInstallment,
   createNextInstallmentOrder,
 } = require("../controllers/studentController");
@@ -36,6 +38,8 @@ router.get("/attendance", myAttendance);
 router.get("/classmates", classmates);
 router.get("/materials", listMaterials);
 router.get("/payments", myPayments);
+router.post("/payments/custom/order", createCustomOrder);
+router.post("/payments/custom", payCustom);
 router.post("/payments/next-installment/order", createNextInstallmentOrder);
 router.post("/payments/next-installment", payNextInstallment);
 router.get("/payments/:id/receipt", studentReceipt);

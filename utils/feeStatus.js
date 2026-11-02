@@ -17,7 +17,9 @@ const getFeeStatus = async (student) => {
     { $group: { _id: null, total: { $sum: "$amount" } } },
   ]);
   const totalPaid = round2(agg?.total || 0);
-  const planTotal = round2(registration.planTotal);
+  // Late fees add to the course fee; scholarships and discounts take from it.
+  const adjustment = (student.feeAdjustments || []).reduce((sum, a) => sum + (a.amount || 0), 0);
+  const planTotal = round2(Math.max(0, registration.planTotal + adjustment));
   const remaining = round2(Math.max(0, planTotal - totalPaid));
   return { planTotal, totalPaid, remaining, fullyPaid: remaining === 0 && !(student.balanceDue > 0) };
 };

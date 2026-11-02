@@ -1,4 +1,5 @@
 const { paymentDeadline, DAY_MS } = require("../utils/paymentCycle");
+const { getFeeRules } = require("../utils/feeRules");
 const { getFeeStatus, closeOutIfFullyPaid } = require("../utils/feeStatus");
 const { syncFromSchedule, publicSchedule, hasSchedule } = require("../utils/installmentSchedule");
 const Batch = require("../models/Batch");
@@ -137,9 +138,31 @@ exports.payNextInstallment = async (req, res) => {
   }
 };
 
+// Pays any amount towards the dues, or towards one installment the student picks.
+exports.createCustomOrder = async (req, res) => {
+  try {
+    const { amount, itemId } = req.body || {};
+    res.json(await openStudentOrder(req.user, "custom", { amount, itemId }));
+  } catch (err) {
+    respondError(res, err, "Could not start the payment");
+  }
+};
+
+exports.payCustom = async (req, res) => {
+  try {
+    const { amount, itemId, razorpay: proof } = req.body || {};
+    const done = await alreadyRecorded(req.user, "custom", proof?.orderId);
+    const { order, payment } = done || (await payStudentOrder(req.user, "custom", proof, { amount, itemId }));
+    res.json({ payment: publicPayment(payment), excess: order.excess || 0 });
+  } catch (err) {
+    respondError(res, err);
+  }
+};
+
 exports.myPayments = async (req, res) => {
   try {
     if (syncFromSchedule(req.user)) await req.user.save();
+    const rules = await getFeeRules(req.user.admin);
     const { page, limit, skip } = paginate(req);
     const filter = { student: req.user._id };
     const [history, total] = await Promise.all([
@@ -155,7 +178,9 @@ exports.myPayments = async (req, res) => {
         paymentGraceUntil: req.user.paymentGraceUntil,
         feeStatus: await getFeeStatus(req.user),
         schedule: publicSchedule(req.user),
-        paymentDeadline: paymentDeadline(req.user),
+        paymentDeadline: paymentDeadline(req.user, rules.graceDays),
+        graceDays: rules.graceDays,
+        adjustments: (req.user.feeAdjustments || []).map((a) => ({ kind: a.kind, amount: a.amount, note: a.note, createdAt: a.createdAt })),
         // False only where online payment isn't available at all (production, no Razorpay keys).
         onlinePayment: (await paymentMode(req.user.admin)).mode !== "none",
         nextInstallmentDueDate:

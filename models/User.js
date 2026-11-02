@@ -68,9 +68,30 @@ const userSchema = new mongoose.Schema(
           dueAfterDays: { type: Number, default: 0, min: 0 },
           dueDate: { type: Date, required: true },
           paid: { type: Number, default: 0, min: 0 },
+          // Late fee already added into `amount` of this installment.
+          fine: { type: Number, default: 0, min: 0 },
         },
       ],
       default: [],
+    },
+    // Money added to (+) or taken off (-) the student's course fee after admission:
+    // late fees, scholarships, discounts. Kept as a ledger so it can be shown and audited.
+    feeAdjustments: {
+      type: [
+        {
+          kind: { type: String, enum: ["late_fee", "scholarship", "discount", "sibling"], required: true },
+          amount: { type: Number, required: true },
+          note: { type: String, trim: true, default: "" },
+          ref: { type: String, default: null },
+          createdAt: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
+    },
+    // Late fee charged so far for the due date `forDue` (so it is added only once, or grows per day).
+    lateFee: {
+      forDue: { type: Date, default: null },
+      applied: { type: Number, default: 0 },
     },
     // When the last fee reminder email went out — keeps the job to one per day.
     lastFeeReminderAt: { type: Date, default: null },
@@ -138,6 +159,22 @@ const userSchema = new mongoose.Schema(
     emailQuota: {
       day: { type: String, default: null },
       count: { type: Number, default: 0 },
+    },
+
+    // --- Fee rules (admin only) ---
+    // Each institute decides its own grace period, late fee and sibling discount.
+    feeRules: {
+      // Extra days after the due date before an unpaid account is deactivated.
+      graceDays: { type: Number, default: 3, min: 0, max: 60 },
+      lateFee: {
+        mode: { type: String, enum: ["none", "flat", "daily"], default: "none" },
+        // flat: charged once when the due date passes. daily: charged for every full day overdue.
+        amount: { type: Number, default: 0, min: 0 },
+        // Most the late fee can add up to for one due date (0 = no limit).
+        maxAmount: { type: Number, default: 0, min: 0 },
+      },
+      // Percent off for a student the admin marks as a sibling.
+      siblingDiscountPercent: { type: Number, default: 0, min: 0, max: 100 },
     },
 
     // --- Razorpay (admin only) ---

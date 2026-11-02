@@ -79,6 +79,16 @@ const syncFromSchedule = (student, now = new Date()) => {
   return changed;
 };
 
+// Puts `amount` on one chosen installment only (the student picked it). Returns what
+// did not fit because the installment needed less.
+const applyToItem = (student, item, amount) => {
+  const take = Math.min(round2(amount), remainingOf(item));
+  item.paid = round2((item.paid || 0) + take);
+  student.markModified("installmentSchedule");
+  syncFromSchedule(student);
+  return round2(amount - take);
+};
+
 // Records `amount` against the schedule and re-derives the flat fields.
 // Returns the part that could not be applied (more than was owed).
 const applyPayment = (student, amount) => {
@@ -102,6 +112,7 @@ const publicSchedule = (student) =>
     label: i.label,
     amount: i.amount,
     paid: i.paid || 0,
+    fine: i.fine || 0,
     dueDate: i.dueDate,
     status: remainingOf(i) <= EPS ? "paid" : (i.paid || 0) > 0 ? "partial" : "pending",
   }));
@@ -112,6 +123,7 @@ module.exports = {
   rebaseSchedule,
   syncFromSchedule,
   applyPayment,
+  applyToItem,
   totalRemaining,
   isCaughtUp,
   publicSchedule,
