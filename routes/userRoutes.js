@@ -6,6 +6,7 @@ const {
   getUser,
   updateUser,
   deleteUser,
+  restoreUser,
   getTeamSettings,
   updateTeamSettings,
   getEmailSettings,
@@ -36,6 +37,7 @@ router.post("/lead-webhook/regenerate", authorize("admin"), regenerateLeadWebhoo
 router.post("/bulk", authorize("admin"), bulkCreateUsers);
 
 router.route("/").get(listUsers).post(createUser);
+router.post("/:id/restore", authorize("admin"), restoreUser);
 router.route("/:id").get(getUser).patch(updateUser).delete(deleteUser);
 
 module.exports = router;

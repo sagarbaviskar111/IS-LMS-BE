@@ -149,7 +149,7 @@ exports.listBatches = async (req, res) => {
     ]);
 
     const counts = await User.aggregate([
-      { $match: { admin: req.user._id, role: { $in: ["student", "teacher"] } } },
+      { $match: { admin: req.user._id, archivedAt: null, role: { $in: ["student", "teacher"] } } },
       {
         $facet: {
           students: [

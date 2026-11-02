@@ -141,7 +141,7 @@ exports.summary = async (req, res) => {
 
     // Fees students still owe (not part of the ledger until they pay).
     const [owed] = await User.aggregate([
-      { $match: { role: "student", admin: adminId, balanceDue: { $gt: 0 } } },
+      { $match: { role: "student", admin: adminId, archivedAt: null, balanceDue: { $gt: 0 } } },
       { $group: { _id: null, total: { $sum: "$balanceDue" }, students: { $sum: 1 } } },
     ]);
 

@@ -18,6 +18,9 @@ const userSchema = new mongoose.Schema(
       cloudinaryResourceType: { type: String, default: null },
     },
     isActive: { type: Boolean, default: true },
+    // Set when an admin "deletes" a student: the account is hidden and locked, but
+    // its attendance, submissions and notifications stay attached. Restorable.
+    archivedAt: { type: Date, default: null },
     // True only for self-registered accounts awaiting their first admin approval.
     // Separate from isActive so deactivating an already-approved user later
     // doesn't put them back in the pending-approval queue.
@@ -221,7 +224,17 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Archived accounts stay out of every normal lookup (lists, counts, reminders,
+// attendance...). Ask for them with .setOptions({ withArchived: true }).
+userSchema.pre(["find", "findOne", "countDocuments", "findOneAndUpdate", "updateMany"], function () {
+  if (this.getOptions().withArchived) return;
+  const f = this.getFilter();
+  if (f.archivedAt === undefined) this.where({ archivedAt: null });
+});
+
 userSchema.pre("save", async function () {
+  // No payment or approval path may switch an archived account back on.
+  if (this.archivedAt) this.isActive = false;
   if (!this.isModified("password")) return;
   this.password = await bcrypt.hash(this.password, 10);
 });

@@ -340,10 +340,19 @@ exports.listUsers = async (req, res) => {
       "newest"
     );
 
+    // Archived students are only shown when asked for, and then only they are.
+    const archived = req.query.archived === "1";
+    if (archived) filter.archivedAt = { $ne: null };
     const { page, limit, skip } = paginate(req);
     const [users, total] = await Promise.all([
-      User.find(filter).collation(CASE_INSENSITIVE).sort(sort).skip(skip).limit(limit).populate("course", "name"),
-      User.countDocuments(filter),
+      User.find(filter)
+        .setOptions({ withArchived: archived })
+        .collation(CASE_INSENSITIVE)
+        .sort(sort)
+        .skip(skip)
+        .limit(limit)
+        .populate("course", "name"),
+      User.countDocuments(filter).setOptions({ withArchived: archived }),
     ]);
     res.json({ users, total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) });
   } catch (err) {
@@ -456,10 +465,39 @@ exports.deleteUser = async (req, res) => {
       return res.status(403).json({ message: "Not authorized to delete this user" });
     }
 
+    // A student who has been part of the institute is archived, not erased, so
+    // attendance, submissions and notifications keep pointing at a real account.
+    // A rejected sign-up request (pending) never took part in anything: remove it.
+    if (user.role === "student" && !user.pending) {
+      user.archivedAt = new Date();
+      user.isActive = false;
+      await user.save();
+      return res.json({ message: "Student archived", archived: true });
+    }
+
     await user.deleteOne();
     // An admin-registered student's private registration link goes with them.
     await StudentEnrollment.deleteMany({ student: user._id });
     res.json({ message: "User deleted" });
+  } catch (err) {
+    res.status(500).json({ message: "Server error" });
+  }
+};
+
+exports.restoreUser = async (req, res) => {
+  try {
+    const user = await User.findById(req.params.id).setOptions({ withArchived: true });
+    if (!user || !user.archivedAt) return res.status(404).json({ message: "Archived student not found" });
+
+    if (!canManageRole(req.user.role, user.role) || !isSameTenant(req.user, user)) {
+      return res.status(403).json({ message: "Not authorized to restore this user" });
+    }
+
+    user.archivedAt = null;
+    user.isActive = true;
+    user.deactivationMessage = null;
+    await user.save();
+    res.json({ user: user.toJSON() });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
   }
