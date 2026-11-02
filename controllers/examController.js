@@ -2,6 +2,7 @@ const { sanitizeRichText } = require("../utils/richText");
 const Exam = require("../models/Exam");
 const Submission = require("../models/Submission");
 const paginate = require("../utils/paginate");
+const { searchRegex, pickSort, CASE_INSENSITIVE } = require("../utils/listQuery");
 
 const isAssigned = (req, batchId) =>
   (req.user.batches || []).some((b) => String(b) === String(batchId));
@@ -53,8 +54,12 @@ exports.listExams = async (req, res) => {
 
     const { page, limit, skip } = paginate(req);
     const filter = { batch };
+    const rx = searchRegex(req.query.q);
+    if (rx) filter.title = rx;
+    if (["draft", "published", "closed"].includes(req.query.status)) filter.status = req.query.status;
+    const sort = pickSort(req.query.sort, { newest: { createdAt: -1 }, oldest: { createdAt: 1 }, title: { title: 1 } }, "newest");
     const [exams, total] = await Promise.all([
-      Exam.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Exam.find(filter).collation(CASE_INSENSITIVE).sort(sort).skip(skip).limit(limit),
       Exam.countDocuments(filter),
     ]);
     res.json({

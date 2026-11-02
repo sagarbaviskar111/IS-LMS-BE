@@ -1,6 +1,7 @@
 const StudentGroup = require("../models/StudentGroup");
 const User = require("../models/User");
 const paginate = require("../utils/paginate");
+const { searchRegex, pickSort, CASE_INSENSITIVE } = require("../utils/listQuery");
 
 // Validates that every id belongs to a student in this admin's tenant.
 const resolveGroupStudents = async (adminId, studentIds) => {
@@ -44,8 +45,16 @@ exports.listGroups = async (req, res) => {
   try {
     const { page, limit, skip } = paginate(req);
     const filter = { admin: req.user._id };
+    const rx = searchRegex(req.query.q);
+    if (rx) filter.name = rx;
+    const sort = pickSort(req.query.sort, { name_asc: { name: 1 }, name_desc: { name: -1 }, newest: { createdAt: -1 }, oldest: { createdAt: 1 } }, "name_asc");
     const [groups, total] = await Promise.all([
-      StudentGroup.find(filter).populate("students", "name email").sort({ name: 1 }).skip(skip).limit(limit),
+      StudentGroup.find(filter)
+        .collation(CASE_INSENSITIVE)
+        .populate("students", "name email")
+        .sort(sort)
+        .skip(skip)
+        .limit(limit),
       StudentGroup.countDocuments(filter),
     ]);
 

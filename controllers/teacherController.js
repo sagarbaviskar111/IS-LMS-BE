@@ -1,6 +1,7 @@
 const Batch = require("../models/Batch");
 const User = require("../models/User");
 const paginate = require("../utils/paginate");
+const { searchRegex, pickSort, CASE_INSENSITIVE } = require("../utils/listQuery");
 
 exports.youtubeStatus = async (req, res) => {
   try {
@@ -43,9 +44,12 @@ exports.listBatchStudents = async (req, res) => {
 
     const { page, limit, skip } = paginate(req);
     const filter = { role: "student", admin: req.user.admin, batch: batchId };
+    const rx = searchRegex(req.query.q);
+    if (rx) filter.$or = [{ name: rx }, { email: rx }, { phone: rx }];
+    const sort = pickSort(req.query.sort, { name: { name: 1 }, newest: { createdAt: -1 }, oldest: { createdAt: 1 } }, "name");
 
     const [students, total] = await Promise.all([
-      User.find(filter).sort({ name: 1 }).skip(skip).limit(limit),
+      User.find(filter).collation(CASE_INSENSITIVE).sort(sort).skip(skip).limit(limit),
       User.countDocuments(filter),
     ]);
 

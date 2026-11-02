@@ -13,6 +13,7 @@ const {
   describeStorageError,
 } = require("../utils/objectStorage");
 const paginate = require("../utils/paginate");
+const { searchRegex, pickSort, CASE_INSENSITIVE } = require("../utils/listQuery");
 
 const isAssigned = (req, batchId) =>
   (req.user.batches || []).some((b) => String(b) === String(batchId));
@@ -185,11 +186,15 @@ exports.listMaterials = async (req, res) => {
     const { page, limit, skip } = paginate(req);
     const filter = { batch };
     if (type) filter.type = type;
+    const rx = searchRegex(req.query.q);
+    if (rx) filter.title = rx;
+    const sort = pickSort(req.query.sort, { newest: { createdAt: -1 }, oldest: { createdAt: 1 }, title: { title: 1 }, size: { fileSize: -1 } }, "newest");
 
     const [materials, total] = await Promise.all([
       Material.find(filter)
         .populate("session", "topic date startTime endTime")
-        .sort({ createdAt: -1 })
+        .collation(CASE_INSENSITIVE)
+        .sort(sort)
         .skip(skip)
         .limit(limit),
       Material.countDocuments(filter),

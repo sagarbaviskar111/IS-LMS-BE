@@ -3,6 +3,7 @@ const JobInterest = require("../models/JobInterest");
 const JobEmailLead = require("../models/JobEmailLead");
 const Batch = require("../models/Batch");
 const paginate = require("../utils/paginate");
+const { searchRegex, pickSort, CASE_INSENSITIVE } = require("../utils/listQuery");
 const { parseJobText } = require("../utils/aiJobParser");
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -111,9 +112,17 @@ exports.listJobsAdmin = async (req, res) => {
   try {
     const { page, limit, skip } = paginate(req);
     const filter = { admin: req.user._id };
+    const rx = searchRegex(req.query.q);
+    if (rx) filter.$or = [{ title: rx }, { company: rx }, { location: rx }];
+    if (req.query.status === "open" || req.query.status === "closed") filter.status = req.query.status;
+    const sort = pickSort(
+      req.query.sort,
+      { newest: { createdAt: -1 }, oldest: { createdAt: 1 }, title: { title: 1 }, company: { company: 1 } },
+      "newest"
+    );
 
     const [jobs, total] = await Promise.all([
-      Job.find(filter).populate("batch", "name").sort({ createdAt: -1 }).skip(skip).limit(limit),
+      Job.find(filter).collation(CASE_INSENSITIVE).populate("batch", "name").sort(sort).skip(skip).limit(limit),
       Job.countDocuments(filter),
     ]);
 
@@ -222,10 +231,24 @@ exports.listJobsForStudent = async (req, res) => {
 // instead of a real apply link, across every institute on the platform.
 exports.listJobEmailLeads = async (req, res) => {
   try {
+    const listQuery = require("../utils/listQuery");
     const { page, limit, skip } = paginate(req);
+    const filter = {};
+    const rx = listQuery.searchRegex(req.query.q);
+    if (rx) filter.$or = [{ company: rx }, { email: rx }, { instituteName: rx }];
+    const sort = listQuery.pickSort(
+      req.query.sort,
+      {
+        newest: { createdAt: -1 },
+        oldest: { createdAt: 1 },
+        company_asc: { company: 1, _id: 1 },
+        institute_asc: { instituteName: 1, _id: 1 },
+      },
+      "newest"
+    );
     const [leads, total] = await Promise.all([
-      JobEmailLead.find().sort({ createdAt: -1 }).skip(skip).limit(limit),
-      JobEmailLead.countDocuments(),
+      JobEmailLead.find(filter).collation(listQuery.CASE_INSENSITIVE).sort(sort).skip(skip).limit(limit),
+      JobEmailLead.countDocuments(filter),
     ]);
 
     res.json({

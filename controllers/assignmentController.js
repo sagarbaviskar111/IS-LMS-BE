@@ -7,6 +7,7 @@ const User = require("../models/User");
 const { uploadFile, deleteFile, resolveResourceType } = require("../utils/cloudinary");
 const { withFileUrl, withAttachmentUrl } = require("../utils/fileUrlView");
 const paginate = require("../utils/paginate");
+const { searchRegex, pickSort, CASE_INSENSITIVE } = require("../utils/listQuery");
 
 const isAssigned = (req, batchId) =>
   (req.user.batches || []).some((b) => String(b) === String(batchId));
@@ -85,9 +86,14 @@ exports.listAssignments = async (req, res) => {
 
     const { page, limit, skip } = paginate(req);
     const filter = { batch };
+    const rx = searchRegex(req.query.q);
+    if (rx) filter.title = rx;
+    if (req.query.when === "upcoming") filter.dueDate = { $gte: new Date() };
+    if (req.query.when === "past") filter.dueDate = { $lt: new Date() };
+    const sort = pickSort(req.query.sort, { due_asc: { dueDate: 1 }, due_desc: { dueDate: -1 }, newest: { createdAt: -1 }, title: { title: 1 } }, "due_asc");
 
     const [assignments, studentCount, total] = await Promise.all([
-      Assignment.find(filter).sort({ dueDate: 1 }).skip(skip).limit(limit),
+      Assignment.find(filter).collation(CASE_INSENSITIVE).sort(sort).skip(skip).limit(limit),
       User.countDocuments({ role: "student", admin: req.user.admin, batch, isActive: true }),
       Assignment.countDocuments(filter),
     ]);
