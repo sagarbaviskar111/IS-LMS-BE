@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { studentCapacityError } = require("../utils/billing");
 const Course = require("../models/Course");
 const Payment = require("../models/Payment");
 const StudentEnrollment = require("../models/StudentEnrollment");
@@ -85,6 +86,9 @@ const createCourseStudent = async ({ adminId, actorId, body }) => {
     terms = paymentTerms(schedule, amountPaid);
     feePlan = schedule;
   }
+
+  const capErr = await studentCapacityError(adminId);
+  if (capErr) return { error: [403, capErr] };
 
   const student = await User.create({
     name,

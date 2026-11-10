@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { studentCapacityError } = require("../utils/billing");
 const User = require("../models/User");
 const Batch = require("../models/Batch");
 const Payment = require("../models/Payment");
@@ -112,6 +113,11 @@ exports.createUser = async (req, res) => {
     const existing = await User.findOne({ email: email.toLowerCase() });
     if (existing) {
       return res.status(409).json({ message: "A user with this email already exists" });
+    }
+
+    if (role === "student") {
+      const capErr = await studentCapacityError(req.user._id);
+      if (capErr) return res.status(403).json({ message: capErr });
     }
 
     const payload = {

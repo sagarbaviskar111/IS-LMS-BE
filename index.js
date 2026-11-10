@@ -32,6 +32,8 @@ const superadminRoutes = require("./routes/superadminRoutes");
 const instituteRoutes = require("./routes/instituteRoutes");
 const portfolioRoutes = require("./routes/portfolioRoutes");
 const inquiryFormRoutes = require("./routes/inquiryFormRoutes");
+const billingRoutes = require("./routes/billingRoutes");
+const { seedDefaults: seedBilling } = require("./utils/billing");
 const User = require("./models/User");
 const { runPaymentCycleCheck } = require("./utils/paymentCycle");
 const { reconcileOrders } = require("./utils/paymentOrders");
@@ -46,7 +48,7 @@ const PORT = process.env.PORT || 5000;
 // though the real request arrived over https.
 app.set("trust proxy", 1);
 
-connectDB();
+connectDB().then(() => seedBilling()).catch((e) => console.error("[billing] seed failed:", e.message));
 
 app.use(
   cors({
@@ -93,6 +95,7 @@ app.use("/api/superadmin", superadminRoutes);
 app.use("/api/institutes", instituteRoutes);
 app.use("/api/portfolio", portfolioRoutes);
 app.use("/api/inquiry-forms", inquiryFormRoutes);
+app.use("/api/billing", billingRoutes);
 
 // Catches file-upload failures (oversized file, wrong type) from any multer
 // instance in the app and returns clean JSON instead of Express's default

@@ -1,4 +1,5 @@
 const Lead = require("../models/Lead");
+const { studentCapacityError } = require("../utils/billing");
 const User = require("../models/User");
 const Payment = require("../models/Payment");
 const { CALL_RESPONSES } = require("../models/Lead");
@@ -226,6 +227,9 @@ exports.registerLead = async (req, res) => {
     if (existing) {
       return res.status(409).json({ message: "A user with this email already exists" });
     }
+
+    const capErr = await studentCapacityError(lead.admin);
+    if (capErr) return res.status(403).json({ message: capErr });
 
     const fee = typeof feeAmount === "number" && feeAmount >= 0 ? feeAmount : lead.feeAmount || 0;
     const paidNow = typeof amountPaidNow === "number" && amountPaidNow > 0 ? amountPaidNow : 0;

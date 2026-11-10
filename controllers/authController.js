@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const { studentCapacityError } = require("../utils/billing");
 const fs = require("fs");
 const User = require("../models/User");
 const Lead = require("../models/Lead");
@@ -183,6 +184,11 @@ exports.register = async (req, res) => {
       return res.status(409).json({ message: "A user with this email already exists" });
     }
 
+    if (match.role === "student") {
+      const capErr = await studentCapacityError(match.admin._id);
+      if (capErr) return res.status(403).json({ message: capErr });
+    }
+
     const user = await User.create({
       name,
       email,
@@ -250,6 +256,9 @@ exports.registerViaLead = async (req, res) => {
     if (existing) {
       return res.status(409).json({ message: "A user with this email already exists" });
     }
+
+    const capErr = await studentCapacityError(lead.admin);
+    if (capErr) return res.status(403).json({ message: capErr });
 
     // A fee was set on this lead — the account is created but stays inactive
     // until the registration payment is verified.

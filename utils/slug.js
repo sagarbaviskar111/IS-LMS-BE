@@ -2,7 +2,7 @@ const User = require("../models/User");
 
 // "platform" is reserved for the superadmin console (/platform/dashboard/superadmin),
 // which isn't tied to any one institute. The others are existing top-level routes.
-const RESERVED_SLUGS = new Set(["platform", "login", "signup", "dashboard", "api", "register", "student-portfolio"]);
+const RESERVED_SLUGS = new Set(["platform", "login", "signup", "dashboard", "api", "register", "student-portfolio", "pricing", "get-started", "about", "contact", "careers", "privacy", "terms", "refund-policy", "verify", "forgot-password", "reset-password"]);
 
 const slugify = (text) =>
   text

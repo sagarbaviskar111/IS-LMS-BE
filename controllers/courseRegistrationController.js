@@ -1,4 +1,5 @@
 const fs = require("fs");
+const { studentCapacityError } = require("../utils/billing");
 const path = require("path");
 const Course = require("../models/Course");
 const CourseRegistration = require("../models/CourseRegistration");
@@ -257,6 +258,8 @@ exports.submitRegistration = async (req, res) => {
       await student.save();
     } else {
       if (await User.findOne({ email })) return fail(409, "An account with this email already exists — log in instead");
+      const capErr = await studentCapacityError(course.admin);
+      if (capErr) return fail(403, capErr);
       student = await User.create({
         name,
         email,
