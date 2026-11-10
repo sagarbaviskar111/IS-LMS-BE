@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const Course = require("../models/Course");
+const SyllabusProgress = require("../models/SyllabusProgress");
 const paginate = require("../utils/paginate");
 const { searchRegex, pickSort, CASE_INSENSITIVE } = require("../utils/listQuery");
 
@@ -82,6 +83,21 @@ const parseCourse = (body, { partial }) => {
     const text = String(body.syllabus || "").trim();
     if (text.length > 30000) return { error: "Syllabus is too long (max 30,000 characters)" };
     data.syllabus = text;
+  }
+
+  if (has("syllabusItems")) {
+    if (!Array.isArray(body.syllabusItems)) return { error: "Syllabus topics must be a list" };
+    if (body.syllabusItems.length > 400) return { error: "Too many syllabus topics (max 400)" };
+    const items = [];
+    for (let i = 0; i < body.syllabusItems.length; i++) {
+      const it = body.syllabusItems[i] || {};
+      const title = String(it.title || "").trim().slice(0, 160);
+      if (!title) return { error: `Topic ${i + 1}: enter a title` };
+      const entry = { unit: String(it.unit || "").trim().slice(0, 80), title };
+      if (it._id && /^[0-9a-f]{24}$/i.test(String(it._id))) entry._id = it._id;
+      items.push(entry);
+    }
+    data.syllabusItems = items;
   }
 
   return { data };
@@ -182,6 +198,10 @@ exports.updateCourse = async (req, res) => {
     }
     course.set(data);
     await course.save();
+    if (data.syllabusItems) {
+      // Topics removed from the syllabus must not leave ticks behind.
+      await SyllabusProgress.deleteMany({ course: course._id, topicId: { $nin: course.syllabusItems.map((t) => t._id) } });
+    }
     res.json({ course });
   } catch (err) {
     res.status(500).json({ message: "Server error" });

@@ -41,6 +41,7 @@ const {
 } = require("../controllers/assignmentController");
 const { upload, assignmentUpload } = require("../utils/upload");
 const { listMyInstituteTools } = require("../controllers/toolController");
+const { teacherView: syllabusView, teacherMark: syllabusMark } = require("../controllers/syllabusController");
 const { protect, authorize } = require("../middleware/auth");
 
 const router = express.Router();
@@ -52,6 +53,8 @@ router.get("/youtube-status", youtubeStatus);
 router.get("/tools", listMyInstituteTools);
 
 router.get("/batches", listMyBatches);
+router.get("/batches/:id/syllabus", syllabusView);
+router.patch("/batches/:id/syllabus/:topicId", syllabusMark);
 router.get("/batches/:id/students", listBatchStudents);
 router.get("/batches/:id/attendance-summary", batchAttendanceSummary);
 router.get("/batches/:id/network", batchNetwork);

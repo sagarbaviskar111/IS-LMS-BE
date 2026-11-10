@@ -16,6 +16,7 @@ const { listAssignments, submitAssignment } = require("../controllers/studentAss
 const { assignmentUpload } = require("../utils/upload");
 const { listMyInstituteTools } = require("../controllers/toolController");
 const { listJobsForStudent, expressInterest } = require("../controllers/jobController");
+const { studentView: syllabusView } = require("../controllers/syllabusController");
 const { protect, authorize } = require("../middleware/auth");
 
 const router = express.Router();
@@ -33,6 +34,7 @@ router.get("/tools", listMyInstituteTools);
 router.get("/jobs", listJobsForStudent);
 router.post("/jobs/:id/interest", expressInterest);
 router.get("/batch", myBatch);
+router.get("/syllabus", syllabusView);
 router.get("/sessions", listSessions);
 router.get("/attendance", myAttendance);
 router.get("/classmates", classmates);

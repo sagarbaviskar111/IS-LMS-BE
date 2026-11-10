@@ -32,6 +32,11 @@ const courseSchema = new mongoose.Schema(
     installmentCharge: { type: Number, default: 0, min: 0 },
 
     // Plain text, pasted in by the admin as-is (line breaks kept).
+    // Structured syllabus: topics grouped by unit, in order. Teachers tick them off per batch.
+    syllabusItems: {
+      type: [{ unit: { type: String, trim: true, maxlength: 80, default: "" }, title: { type: String, required: true, trim: true, maxlength: 160 } }],
+      default: [],
+    },
     syllabus: { type: String, trim: true, maxlength: 30000, default: "" },
     // Terms shown to a student during registration; blank = the standard text.
     terms: { type: String, trim: true, maxlength: 20000, default: "" },

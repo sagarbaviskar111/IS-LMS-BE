@@ -33,6 +33,7 @@ const instituteRoutes = require("./routes/instituteRoutes");
 const portfolioRoutes = require("./routes/portfolioRoutes");
 const inquiryFormRoutes = require("./routes/inquiryFormRoutes");
 const billingRoutes = require("./routes/billingRoutes");
+const demoRequestRoutes = require("./routes/demoRequestRoutes");
 const { seedDefaults: seedBilling } = require("./utils/billing");
 const User = require("./models/User");
 const { runPaymentCycleCheck } = require("./utils/paymentCycle");
@@ -96,6 +97,7 @@ app.use("/api/institutes", instituteRoutes);
 app.use("/api/portfolio", portfolioRoutes);
 app.use("/api/inquiry-forms", inquiryFormRoutes);
 app.use("/api/billing", billingRoutes);
+app.use("/api/demo-requests", demoRequestRoutes);
 
 // Catches file-upload failures (oversized file, wrong type) from any multer
 // instance in the app and returns clean JSON instead of Express's default
